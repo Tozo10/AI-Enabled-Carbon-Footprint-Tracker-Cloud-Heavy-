@@ -1,4 +1,4 @@
-Here's a good description for your project, suitable for a GitHub README, a project report, or a resume.
+
 
 ## Project Description
 The AI-Enabled Carbon Footprint Tracker is an intelligent, cloud-native web application designed to empower individuals to take meaningful climate action. The platform allows users to effortlessly track, understand, and reduce their daily carbon footprint by logging activities like travel and energy consumption through intuitive text or voice commands.
