@@ -1,35 +1,39 @@
 # ---- Stage 1: Build Stage ----
-# Use an official Python runtime as a parent image
-FROM python:3.11-slim AS builder
+FROM python:3.11-slim-bookworm AS builder
 
-# Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Set work directory
 WORKDIR /app
 
-# Install dependencies
+RUN apt-get update && apt-get install -y build-essential
 COPY requirements.txt .
-RUN pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements.txt
+RUN pip wheel --no-cache-dir --wheel-dir /app/wheels -r requirements.txt
 
 
 # ---- Stage 2: Final Stage ----
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
-# Copy installed dependencies from the builder stage
+# Create a non-root user and group
+RUN addgroup --system app && adduser --system --ingroup app appuser
+
+# Copy installed dependencies
 COPY --from=builder /app/wheels /wheels
 COPY --from=builder /app/requirements.txt .
-RUN pip install --no-cache /wheels/*
+RUN pip install --no-cache-dir /wheels/*
 
-# Copy project code
+# Copy project code and change ownership
 COPY . .
+RUN chown -R appuser:app /app
 
-# Expose the port the app runs on
+# Switch to the non-root user
+USER appuser
+
+# Collect static files
+RUN python manage.py collectstatic --no-input
+
 EXPOSE 8000
 
-# Run the application using Gunicorn
-# This command starts the Gunicorn server and points it to your project's wsgi file.
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "core.wsgi:application"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "core.wsgi:application"]
