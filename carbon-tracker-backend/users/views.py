@@ -10,6 +10,7 @@ from django.shortcuts import redirect
 from .models import Activity
 from .forms import ActivityForm
 from . import nlp_service
+from .carbon_calculator import calculate_co2e
 import json
 
 class CustomLoginView(LoginView):
@@ -38,6 +39,11 @@ class RegisterView(FormView):
         return super(RegisterView, self).get(*args, **kwargs)
     def get_success_url(self):
         return reverse_lazy('home')
+
+
+
+# This code just replaces your LogActivityView.
+
 class LogActivityView(LoginRequiredMixin, CreateView):
     model = Activity
     form_class = ActivityForm
@@ -45,17 +51,28 @@ class LogActivityView(LoginRequiredMixin, CreateView):
     success_url = reverse_lazy('home')
 
     def form_valid(self, form):
-        form.instance.user = self.request.user
-        input_text = form.cleaned_data['input_text']
+       form.instance.user = self.request.user
+       input_text = form.cleaned_data['input_text']
+       analysis_results = nlp_service.analyze_activity_text(input_text)
+       if analysis_results:
+        # 1. Get all data from the AI
+            activity_type = analysis_results.get('activity_type', 'Unknown')
+            key = analysis_results.get('key')
+            distance = analysis_results.get('distance')
+            unit = analysis_results.get('unit')
 
-        # The service now returns a dictionary or None
-        analysis_results = nlp_service.analyze_activity_text(input_text)
+        # 2. Save the extracted data to the instance
+            form.instance.activity_type = activity_type
+            form.instance.key = key
+            form.instance.distance = distance
+            form.instance.unit = unit
 
-        if analysis_results:
-            form.instance.activity_type = analysis_results.get('activity_type', 'Unknown')
-            # You can also save other extracted data here in the future
-            # form.instance.distance = analysis_results.get('distance')
-        else:
+            # 3. Call the calculator to get the final CO2e
+            calculated_co2e = calculate_co2e(key, distance, unit)
+
+            # 4. Save the final calculation
+            form.instance.co2e = calculated_co2e
+
+       else:
             form.instance.activity_type = 'Analysis Failed'
-
-        return super().form_valid(form)
+       return super().form_valid(form)
