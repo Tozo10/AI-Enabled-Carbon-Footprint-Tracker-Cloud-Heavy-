@@ -1,0 +1,47 @@
+/* aboutText.css */
+
+/* Fade + Slide animation */
+@keyframes fadeSlide {
+  0% {
+    opacity: 0;
+    transform: translateY(25px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.about-text {
+  font-size: 1.25rem;       /* text-xl */
+  color: #93c5fd;           /* Tailwind blue-300 */
+  line-height: 1.75rem;
+  text-align: justify;
+  letter-spacing: 0.5px;
+  padding: 1rem;
+  animation: fadeSlide 1s ease-out forwards;
+}
+
+/* aboutText.css */
+
+/* Typewriter animation */
+@keyframes typewriter {
+  from { width: 0; }
+  to { width: 100%; }
+}
+
+@keyframes blinkCursor {
+  0%, 100% { border-color: transparent; }
+  50% { border-color: #93c5fd; } /* Tailwind blue-300 */
+}
+
+.typewriter {
+  font-size: 2.4rem;          /* Bigger text */
+  font-weight: 800;           /* Extra bold */
+  color: #037880;             /* Tailwind green-400 */
+  white-space: nowrap;
+  overflow: hidden;
+  border-right: 3px solid #01151d;
+  width: 0;
+  animation: typewriter 2.5s steps(40, end) forwards, blinkCursor 0.7s step-end infinite;
+}
