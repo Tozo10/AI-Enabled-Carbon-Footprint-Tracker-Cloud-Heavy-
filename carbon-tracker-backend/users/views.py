@@ -1,78 +1,131 @@
-from django.shortcuts import render
-from django.contrib.auth.views import LoginView
-from django.urls import reverse_lazy
-from django.views.generic import TemplateView 
-from django.contrib.auth.mixins import LoginRequiredMixin
-from django.contrib.auth.forms import UserCreationForm
-from django.contrib.auth import login
-from django.views.generic.edit import FormView, CreateView
-from django.shortcuts import redirect
+from django.shortcuts import get_object_or_404
+from django.contrib.auth.models import User
+from django.contrib.auth import authenticate, login, logout
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status
+
 from .models import Activity
-from .forms import ActivityForm
 from . import nlp_service
 from .carbon_calculator import calculate_co2e
-import json
 
-class CustomLoginView(LoginView):
-    template_name = 'users/login.html'
-    fields = '__all__'
-    redirect_authenticated_user = True
+# --- 1. LOGIN VIEW (API) ---
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def login_api(request):
+    """
+    Receives JSON: {"username": "...", "password": "..."}
+    Returns JSON: {"status": "success", "username": "..."}
+    """
+    username = request.data.get('username')
+    password = request.data.get('password')
 
-class HomeView(LoginRequiredMixin, TemplateView):
-    template_name = 'home.html'
+    user = authenticate(username=username, password=password)
 
-class RegisterView(FormView):
-    template_name = 'users/register.html'
-    form_class = UserCreationForm
-    redirect_authenticated_user = True
-    success_url = reverse_lazy('home')
-
-    def form_valid(self, form):
-        user = form.save()
-        if user is not None:
-            login(self.request, user)
-        return super(RegisterView, self).form_valid(form)
-
-    def get(self, *args, **kwargs):
-        if self.request.user.is_authenticated:
-            return redirect('home')
-        return super(RegisterView, self).get(*args, **kwargs)
-    def get_success_url(self):
-        return reverse_lazy('home')
+    if user is not None:
+        login(request, user)  # Starts a session on the server
+        return Response({
+            "status": "success",
+            "message": "Login successful",
+            "username": user.username
+        }, status=status.HTTP_200_OK)
+    else:
+        return Response({
+            "status": "error",
+            "message": "Invalid username or password"
+        }, status=status.HTTP_401_UNAUTHORIZED)
 
 
+# --- 2. REGISTER/SIGNUP VIEW (API) ---
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def register_api(request):
+    """
+    Receives JSON: {"username": "...", "password": "..."}
+    Creates a new user and logs them in.
+    """
+    username = request.data.get('username')
+    password = request.data.get('password')
 
-# This code just replaces your LogActivityView.
+    if not username or not password:
+        return Response({"message": "Username and password required"}, status=status.HTTP_400_BAD_REQUEST)
 
-class LogActivityView(LoginRequiredMixin, CreateView):
-    model = Activity
-    form_class = ActivityForm
-    template_name = 'users/log_activity.html'
-    success_url = reverse_lazy('home')
+    if User.objects.filter(username=username).exists():
+        return Response({"message": "Username already taken"}, status=status.HTTP_400_BAD_REQUEST)
 
-    def form_valid(self, form):
-       form.instance.user = self.request.user
-       input_text = form.cleaned_data['input_text']
-       analysis_results = nlp_service.analyze_activity_text(input_text)
-       if analysis_results:
-        # 1. Get all data from the AI
-            activity_type = analysis_results.get('activity_type', 'Unknown')
-            key = analysis_results.get('key')
-            distance = analysis_results.get('distance')
-            unit = analysis_results.get('unit')
+    # Create the user
+    user = User.objects.create_user(username=username, password=password)
+    user.save()
+    
+    # Log them in immediately
+    login(request, user)
 
-        # 2. Save the extracted data to the instance
-            form.instance.activity_type = activity_type
-            form.instance.key = key
-            form.instance.distance = distance
-            form.instance.unit = unit
+    return Response({
+        "status": "success", 
+        "username": user.username,
+        "message": "User created successfully"
+    }, status=status.HTTP_201_CREATED)
 
-            # 3. Call the calculator to get the final CO2e
-            calculated_co2e = calculate_co2e(key, distance, unit)
 
-            # 4. Save the final calculation
-            form.instance.co2e = calculated_co2e
+# --- 3. LOG ACTIVITY VIEW (API) ---
+@api_view(['POST'])
+# Note: For now, we allow any connection, but ideally, you use @permission_classes([IsAuthenticated])
+# if you are sending the session cookie or token from React.
+@permission_classes([AllowAny]) 
+def log_activity_api(request):
+    """
+    Receives JSON: {"username": "...", "input_text": "I drove 10km"}
+    Runs NLP -> Calculator -> Saves to DB -> Returns Result
+    """
+    input_text = request.data.get('input_text')
+    username = request.data.get('username') # React sends this now
 
-       else:
-            form.instance.activity_type = 'Analysis Failed'
-       return super().form_valid(form)
+    if not input_text:
+        return Response({"message": "No input text provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Find the user to associate the activity with
+    try:
+        user = User.objects.get(username=username)
+    except User.DoesNotExist:
+        # Fallback: If no username sent, try request.user (if session auth is working)
+        if request.user.is_authenticated:
+            user = request.user
+        else:
+            return Response({"message": "User not found or not logged in"}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # 1. Analyze with NLP Service
+    analysis_results = nlp_service.analyze_activity_text(input_text)
+    
+    if not analysis_results:
+        return Response({"message": "Could not understand the activity"}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 2. Extract Data
+    activity_type = analysis_results.get('activity_type', 'Unknown')
+    key = analysis_results.get('key')
+    distance = analysis_results.get('distance')
+    unit = analysis_results.get('unit')
+
+    # 3. Calculate Carbon Footprint
+    calculated_co2e = calculate_co2e(key, distance, unit)
+
+    # 4. Save to Database
+    activity = Activity.objects.create(
+        user=user,
+        input_text=input_text,
+        activity_type=activity_type,
+        key=key,
+        distance=distance,
+        unit=unit,
+        co2e=calculated_co2e
+    )
+
+    # 5. Return JSON to React
+    return Response({
+        "status": "success",
+        "activity": input_text,
+        "co2e_kg": calculated_co2e,
+        "message": f"Logged: {activity_type} resulting in {calculated_co2e}kg CO2"
+    }, status=status.HTTP_201_CREATED)
