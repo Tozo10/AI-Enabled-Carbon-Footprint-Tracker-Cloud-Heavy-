@@ -1,0 +1,30 @@
+
+
+services:
+  backend:
+    build:
+      context: ./carbon-tracker-backend
+      dockerfile: Dockerfile
+    container_name: carbon_backend
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./carbon-tracker-backend:/app
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./carbon-tracker-backend/.env
+
+  frontend:
+    build:
+      context: ./carbon-tracker-frontend
+      dockerfile: Dockerfile.dev  # Uses the new dev file
+    container_name: carbon_frontend
+    ports:
+      - "5173:5173" # Maps standard Vite port
+    volumes:
+      - ./carbon-tracker-frontend:/app # Syncs your code to container
+      - /app/node_modules # Prevents host node_modules from breaking container
+    depends_on:
+      - backend
+    environment:
+      - VITE_API_URL=http://localhost:8000

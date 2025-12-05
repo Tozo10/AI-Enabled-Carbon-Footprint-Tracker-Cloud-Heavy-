@@ -1,9 +1,11 @@
 from django.urls import path
-from .views import CustomLoginView, RegisterView, LogActivityView
-from django.contrib.auth.views import LogoutView
+from . import views
+
 urlpatterns = [
-    path('login/', CustomLoginView.as_view(), name='login'),
-    path('logout/', LogoutView.as_view(next_page='login'), name='logout'),
-    path('register/', RegisterView.as_view(), name='register'),
-     path('log-activity/', LogActivityView.as_view(), name='log-activity'),
+    # API Endpoints for React Connection
+    path('api/login/', views.login_api, name='login_api'),
+    path('api/register/', views.register_api, name='register_api'),
+    path('api/log-activity/', views.log_activity_api, name='log_activity_api'),
+    # NEW ENDPOINT
+    path('api/my-activities/', views.get_user_activities_api, name='get_user_activities_api'),
 ]
