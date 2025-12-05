@@ -129,3 +129,34 @@ def log_activity_api(request):
         "co2e_kg": calculated_co2e,
         "message": f"Logged: {activity_type} resulting in {calculated_co2e}kg CO2"
     }, status=status.HTTP_201_CREATED)
+
+
+# users/views.py (Add this to the bottom)
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_user_activities_api(request):
+    """
+    GET /api/my-activities/?username=testuser
+    Returns a list of all activities for that user.
+    """
+    username = request.GET.get('username')
+    
+    if not username:
+        return Response({"message": "Username parameter required"}, status=status.HTTP_400_BAD_REQUEST)
+        
+    try:
+        user = User.objects.get(username=username)
+    except User.DoesNotExist:
+        return Response({"message": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    # ✅ FIX: Removed 'created_at' from this list to prevent the crash
+    activities = Activity.objects.filter(user=user).order_by('-id').values(
+        'id', 'activity_type', 'input_text', 'distance', 'unit', 'co2e'
+    )
+
+    return Response({
+        "status": "success",
+        "count": len(activities),
+        "activities": list(activities)
+    }, status=status.HTTP_200_OK)

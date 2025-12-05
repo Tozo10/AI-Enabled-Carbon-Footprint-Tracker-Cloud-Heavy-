@@ -67,7 +67,7 @@ function Activity() {
           value={activityText}
           onChange={(e) => setActivityText(e.target.value)}
           placeholder="I drove 30km in a diesel car"
-          className="w-full px-4 py-3 rounded-md border border-gray-300 text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none"
+          className="w-full px-4 py-3 rounded-md border border-gray-600 bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none"
           rows={3}
         />
       </div>
