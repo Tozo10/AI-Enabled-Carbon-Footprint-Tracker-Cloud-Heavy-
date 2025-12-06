@@ -7,7 +7,7 @@ class Activity(models.Model):
     input_text = models.TextField()
     activity_type = models.CharField(max_length=100, blank=True, null=True)
     key = models.CharField(max_length=100, blank=True, null=True) # e.g., 'cab', 'steak'
-    distance = models.FloatField(blank=True, null=True) 
+    quantity = models.FloatField(blank=True, null=True) 
     unit = models.CharField(max_length=50, blank=True, null=True) 
     co2e = models.FloatField(blank=True, null=True)
     

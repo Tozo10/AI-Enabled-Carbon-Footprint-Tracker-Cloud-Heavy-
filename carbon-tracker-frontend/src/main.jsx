@@ -6,6 +6,7 @@ import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import AuthForm from './LoginPage.jsx'
 import Dashboard from './dashBoard.jsx'
 import Activity from './activity.jsx'
+import ActivitiesList from './ActivitiesList.jsx'
 
 createRoot(document.getElementById('root')).render(
   <Router>
@@ -18,6 +19,9 @@ createRoot(document.getElementById('root')).render(
 
         {/* Activity page */}
         <Route path="/activity" element={<Activity />} />
+        {/* ADD THIS NEW ROUTE */}
+        <Route path="/activities" element={<ActivitiesList />} />
+      
       </Routes>
     </Router>
 
