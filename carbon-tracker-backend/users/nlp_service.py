@@ -30,30 +30,29 @@ def analyze_activity_text(text_to_analyze):
         # This prompt asks for a SINGLE JSON OBJECT
         prompt_template = """
         [INST]
-From the user's sentence, extract the activity type, distance, unit, and a specific "key" for the *first* activity found.
-The 'activity_type' must be one of: 'TRANSPORT', 'FOOD', or 'ENERGY'.
-The 'key' must be a specific item like 'cab', 'car', 'steak', 'chicken', 'salad'.
+From the user's sentence, extract the 'activity_type', 'quantity', 'unit', and a specific 'key'.
+- 'activity_type': 'TRANSPORT', 'FOOD', or 'ENERGY'.
+- 'key': specific item (e.g., 'car', 'bus', 'steak', 'burger', 'electricity').
+- 'quantity': the numeric amount (e.g., 10, 2, 0.5).
+- 'unit': the unit of measure (e.g., 'km', 'mile', 'serving', 'kg', 'kWh'). 
+If no unit is mentioned for food, assume 'serving'.
+If no vehicle is mentioned for transport, assume 'car'.
+
 Respond with ONLY a single, valid JSON object.
-If no activity is found, return a JSON object with null values.
 
 Sentence: "I took a 25 mile cab ride yesterday."
 [/INST]
-{{ "activity_type": "TRANSPORT", "key": "cab", "distance": 25, "unit": "mile" }}
+{{ "activity_type": "TRANSPORT", "key": "cab", "quantity": 25, "unit": "mile" }}
 
 [INST]
-Sentence: "I ate a steak for dinner."
+Sentence: "I ate 2 steaks for dinner."
 [/INST]
-{{ "activity_type": "FOOD", "key": "steak", "distance": null, "unit": "serving" }}
+{{ "activity_type": "FOOD", "key": "steak", "quantity": 2, "unit": "serving" }}
 
 [INST]
-Sentence: "I drove my car 100km."
+Sentence: "I used 50 kWh of electricity."
 [/INST]
-{{ "activity_type": "TRANSPORT", "key": "car", "distance": 100, "unit": "km" }}
-
-[INST]
-Sentence: "That was a good movie."
-[/INST]
-{{ "activity_type": null, "key": null, "distance": null, "unit": null }}
+{{ "activity_type": "ENERGY", "key": "electricity", "quantity": 50, "unit": "kWh" }}
 
 [INST]
 Sentence: "{}"

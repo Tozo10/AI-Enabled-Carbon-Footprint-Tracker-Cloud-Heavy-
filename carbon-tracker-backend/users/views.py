@@ -72,8 +72,6 @@ def register_api(request):
 
 # --- 3. LOG ACTIVITY VIEW (API) ---
 @api_view(['POST'])
-# Note: For now, we allow any connection, but ideally, you use @permission_classes([IsAuthenticated])
-# if you are sending the session cookie or token from React.
 @permission_classes([AllowAny]) 
 def log_activity_api(request):
     """
@@ -105,11 +103,15 @@ def log_activity_api(request):
     # 2. Extract Data
     activity_type = analysis_results.get('activity_type', 'Unknown')
     key = analysis_results.get('key')
-    distance = analysis_results.get('distance')
+    quantity = analysis_results.get('quantity')
     unit = analysis_results.get('unit')
 
+    # If the AI found it's TRANSPORT, but didn't find a specific vehicle key (like "cab" or "bus")
+    # We assume it is a personal car.
+    if activity_type == 'TRANSPORT' and not key:
+        key = 'car'
     # 3. Calculate Carbon Footprint
-    calculated_co2e = calculate_co2e(key, distance, unit)
+    calculated_co2e = calculate_co2e(key, quantity, unit)
 
     # 4. Save to Database
     activity = Activity.objects.create(
@@ -117,7 +119,7 @@ def log_activity_api(request):
         input_text=input_text,
         activity_type=activity_type,
         key=key,
-        distance=distance,
+        quantity=quantity,
         unit=unit,
         co2e=calculated_co2e
     )
@@ -131,8 +133,7 @@ def log_activity_api(request):
     }, status=status.HTTP_201_CREATED)
 
 
-# users/views.py (Add this to the bottom)
-
+# --- 4. GET ACTIVITIES VIEW (API) ---
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def get_user_activities_api(request):
@@ -150,9 +151,9 @@ def get_user_activities_api(request):
     except User.DoesNotExist:
         return Response({"message": "User not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    # ✅ FIX: Removed 'created_at' from this list to prevent the crash
+    # ✅ FIX: Changed 'distance' to 'quantity' to match your Model
     activities = Activity.objects.filter(user=user).order_by('-id').values(
-        'id', 'activity_type', 'input_text', 'distance', 'unit', 'co2e'
+        'id', 'activity_type', 'input_text', 'quantity', 'unit', 'co2e'
     )
 
     return Response({

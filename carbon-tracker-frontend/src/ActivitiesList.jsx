@@ -58,7 +58,7 @@ function ActivitiesList() {
                 <tr>
                   <th className="p-4">Input</th>
                   <th className="p-4">Type</th>
-                  <th className="p-4">Distance</th>
+                  <th className="p-4">Quantity</th>
                   <th className="p-4">Carbon (CO₂e)</th>
                 </tr>
               </thead>
@@ -67,7 +67,7 @@ function ActivitiesList() {
                   <tr key={act.id} className="hover:bg-gray-750 transition">
                     <td className="p-4 text-gray-300 italic">"{act.input_text}"</td>
                     <td className="p-4 font-semibold text-blue-300">{act.activity_type}</td>
-                    <td className="p-4">{act.distance} {act.unit}</td>
+                    <td className="p-4">{act.quantity} {act.unit}</td>
                     <td className="p-4 font-bold text-green-400">{act.co2e} kg</td>
                   </tr>
                 ))}

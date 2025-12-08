@@ -1,48 +1,50 @@
 # users/carbon_calculator.py
 from .models import EmissionFactor
 
-def calculate_co2e(key, distance, unit):
+def calculate_co2e(key, quantity, unit):
     """
-    Calculates the CO2e for a given activity by looking up its emission factor.
+    Calculates CO2e based on key, quantity, and unit.
     """
-    if not key:
+    if not key or quantity is None:
         return None
 
     try:
-        # Find the correct emission factor in the database using the unique key
+        # Find the emission factor (case-insensitive)
         factor = EmissionFactor.objects.get(key__iexact=key)
-
-        # We have a factor, now let's calculate
+        
+        amount = float(quantity)
         co2e = 0.0
 
-        # 1. Handle distance-based activities (TRANSPORT)
+        # --- LOGIC FOR TRANSPORT ---
         if factor.activity_type == 'TRANSPORT':
-            if not distance:
-                return None  # Can't calculate transport without distance
-
-            calculated_distance = float(distance)
-
-            # Unit Conversion: Convert everything to 'km' for a standard calculation
+            # Normalize to 'km' because our DB factors are usually in kgCO2e/km
             if unit and unit.lower() in ['mile', 'miles']:
-                calculated_distance *= 1.60934  # Convert miles to km
+                amount = amount * 1.60934
+            
+            # Math: Distance (km) * Factor
+            co2e = amount * factor.co2e_per_unit
 
-            # We assume the factor's 'co2e_per_unit' is always in 'km'
-            co2e = calculated_distance * factor.co2e_per_unit
-
-        # 2. Handle serving-based activities (FOOD)
+        # --- LOGIC FOR FOOD ---
         elif factor.activity_type == 'FOOD':
-            # For food, we assume 1 serving unless otherwise specified
-            # In the future, the AI could also extract quantity
-            co2e = factor.co2e_per_unit  # e.g., 7.8 kg CO2e / 1 serving of steak
+            # Normalize Weight (if user says '500g' but factor is 'kg')
+            if unit and unit.lower() in ['g', 'gram', 'grams']:
+                amount = amount / 1000.0  # Convert grams to kg
+            
+            # Note: If unit is 'serving' or 'item', we just take the amount as is (e.g., 2 steaks)
+            
+            # Math: Quantity * Factor
+            co2e = amount * factor.co2e_per_unit
 
-        # (You can add logic for 'ENERGY' here later)
+        # --- LOGIC FOR ENERGY ---
+        elif factor.activity_type == 'ENERGY':
+            # Math: Quantity (kWh) * Factor
+            co2e = amount * factor.co2e_per_unit
 
-        return co2e
+        return round(co2e, 2)
 
     except EmissionFactor.DoesNotExist:
         print(f"Warning: No emission factor found for key: {key}")
         return None
-
     except Exception as e:
         print(f"Error during calculation: {e}")
         return None
