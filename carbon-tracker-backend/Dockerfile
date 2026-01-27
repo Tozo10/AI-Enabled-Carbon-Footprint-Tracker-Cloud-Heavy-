@@ -6,8 +6,15 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
+# Install system dependencies
 RUN apt-get update && apt-get install -y build-essential
+
+# 1. UPGRADE PIP & INSTALL BUILD TOOLS (Crucial for proper installation)
+RUN pip install --upgrade pip setuptools wheel
+
 COPY requirements.txt .
+
+# 2. Install Python dependencies
 RUN pip wheel --no-cache-dir --wheel-dir /app/wheels -r requirements.txt
 
 
@@ -22,6 +29,9 @@ RUN addgroup --system app && adduser --system --ingroup app appuser
 # Copy installed dependencies
 COPY --from=builder /app/wheels /wheels
 COPY --from=builder /app/requirements.txt .
+
+# 3. UPGRADE PIP IN FINAL STAGE TOO
+RUN pip install --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir /wheels/*
 
 # Copy project code and change ownership
@@ -36,4 +46,4 @@ RUN python manage.py collectstatic --no-input
 
 EXPOSE 8000
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "core.wsgi:application"]
+CMD ["sh", "-c", "python manage.py migrate && gunicorn --bind 0.0.0.0:8000 --workers 4 core.wsgi:application"]

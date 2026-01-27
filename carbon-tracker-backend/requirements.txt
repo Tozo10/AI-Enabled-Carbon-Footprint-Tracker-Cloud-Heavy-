@@ -5,4 +5,6 @@ whitenoise[brotli]==6.6.0
 gunicorn==22.0.0
 django-cors-headers
 djangorestframework
+ibmcloudant==0.9.1
+ibm-watson
 
