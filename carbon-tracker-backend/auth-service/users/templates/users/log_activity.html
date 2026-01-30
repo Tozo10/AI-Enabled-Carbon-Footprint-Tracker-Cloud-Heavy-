@@ -1,0 +1,8 @@
+<h1>Log Your Activity</h1>
+<p>Describe your activity in a simple sentence (e.g., "I took a 15km cab ride").</p>
+
+<form method="POST">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit">Log Activity</button>
+</form>

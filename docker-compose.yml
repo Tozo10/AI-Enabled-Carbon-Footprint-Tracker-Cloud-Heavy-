@@ -1,30 +1,77 @@
-
+version: '3.8'
 
 services:
-  backend:
-    build:
-      context: ./carbon-tracker-backend
-      dockerfile: Dockerfile
-    container_name: carbon_backend
-    command: python manage.py runserver 0.0.0.0:8000
-    volumes:
-      - ./carbon-tracker-backend:/app
-    ports:
-      - "8000:8000"
-    env_file:
-      - ./carbon-tracker-backend/.env
-
+  # --- FRONTEND ---
   frontend:
     build:
       context: ./carbon-tracker-frontend
-      dockerfile: Dockerfile.dev  # Uses the new dev file
+      dockerfile: Dockerfile.dev
     container_name: carbon_frontend
     ports:
-      - "5173:5173" # Maps standard Vite port
+      - "5173:5173"
     volumes:
-      - ./carbon-tracker-frontend:/app # Syncs your code to container
-      - /app/node_modules # Prevents host node_modules from breaking container
-    depends_on:
-      - backend
+      - ./carbon-tracker-frontend:/app
+      - /app/node_modules
     environment:
       - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - auth-service
+      - logger-service
+
+  # --- AUTH SERVICE (Port 8001) ---
+  auth-service:
+    build: ./carbon-tracker-backend/auth-service
+    container_name: carbon_auth
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./carbon-tracker-backend/auth-service:/app
+      - shared_db:/app/data
+    environment:
+      - DEBUG=True
+      - DJANGO_SECRET_KEY=dev_secret_key
+    # Run as root to allow writing to shared DB
+    user: root 
+    command: >
+      sh -c "python manage.py makemigrations &&
+             python manage.py migrate &&
+             python manage.py runserver 0.0.0.0:8000"
+
+  # --- AI SERVICE (Port 5000) ---
+  ai-service:
+    build: ./carbon-tracker-backend/ai-service
+    container_name: carbon_ai
+    expose:
+      - "5000"
+    volumes:
+      - ./carbon-tracker-backend/ai-service:/app
+    # Load environment variables from the AI Service .env file
+    env_file:
+      - ./carbon-tracker-backend/ai-service/.env
+
+  # --- LOGGER SERVICE (Port 8000) ---
+  logger-service:
+    build: ./carbon-tracker-backend/logger-service
+    container_name: carbon_logger
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./carbon-tracker-backend/logger-service:/app
+      - shared_db:/app/data
+    depends_on:
+      - ai-service
+    # Load environment variables from the Logger Service .env file
+    # This ensures CLOUDANT_APIKEY and URL are actually read!
+    env_file:
+      - ./carbon-tracker-backend/logger-service/.env
+    environment:
+      - DEBUG=True
+    # Run as root to allow writing to shared DB
+    user: root
+    command: >
+      sh -c "python manage.py makemigrations &&
+             python manage.py migrate &&
+             python manage.py runserver 0.0.0.0:8000"
+
+volumes:
+  shared_db:

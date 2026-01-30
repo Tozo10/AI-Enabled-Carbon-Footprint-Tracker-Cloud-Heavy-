@@ -1,0 +1,13 @@
+# Ignore Python virtual environment
+venv
+
+# Ignore IDE files
+.idea
+.vscode
+
+# Ignore Python cache
+__pycache__
+*.pyc
+
+# Ignore SQLite database (it should be outside the container)
+db.sqlite3
