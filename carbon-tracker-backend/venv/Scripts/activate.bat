@@ -8,7 +8,7 @@ if defined _OLD_CODEPAGE (
     "%SystemRoot%\System32\chcp.com" 65001 > nul
 )
 
-set VIRTUAL_ENV=C:\Users\SAYANTAN CHATTERJEE\OneDrive\Desktop\4th year\Project\project\carbon-tracker-backend\venv
+set VIRTUAL_ENV=c:\project_finalyear\AI-Enabled-Carbon-Footprint-Tracker-Cloud-Heavy-\carbon-tracker-backend\venv
 
 if not defined PROMPT set PROMPT=$P$G
 

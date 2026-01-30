@@ -23,13 +23,21 @@ function AuthForm() {
     e.preventDefault();
     setIsLoading(true);
 
-    // 1. Point to the correct API endpoint
+    // --- VALIDATION: Check Passwords Match for Signup ---
+    if (mode === "signup" && formData.password !== formData.confirm) {
+      alert("Passwords do not match!");
+      setIsLoading(false);
+      return;
+    }
+
+    // --- CRITICAL UPDATE: Port 8001 for Auth Service ---
+    // The Auth Service (Login/Register) is now on port 8001.
+    // The Logger Service (Activity) remains on port 8000.
     const endpoint = mode === "login" 
-      ? "http://localhost:8000/api/login/" 
-      : "http://localhost:8000/api/register/"; // Make sure this matches urls.py
+      ? "http://localhost:8001/api/login/" 
+      : "http://localhost:8001/api/register/";
 
     try {
-      // 2. Send the data to your Django Backend
       const response = await fetch(endpoint, {
         method: "POST",
         headers: {
@@ -43,7 +51,6 @@ function AuthForm() {
 
       const data = await response.json();
 
-      // 3. CRITICAL: Check if the backend said "OK"
       if (response.ok) {
         console.log("Success:", data);
         
@@ -53,13 +60,12 @@ function AuthForm() {
         // Redirect to Dashboard
         navigate("/dashboard");
       } else {
-        // 4. If failed, show alert and DO NOT redirect
-        alert("Error: " + (data.message || "Invalid credentials. Please try again."));
+        alert("Error: " + (data.message || "Invalid credentials or User exists."));
       }
 
     } catch (error) {
       console.error("Login Error:", error);
-      alert("Could not connect to server. Is Docker running?");
+      alert("Could not connect to Auth Service (Port 8001). Is Docker running?");
     } finally {
       setIsLoading(false);
     }

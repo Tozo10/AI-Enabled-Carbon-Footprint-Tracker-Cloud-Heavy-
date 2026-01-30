@@ -32,7 +32,7 @@ function Activity() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          username: username, // Send the valid username
+          username: username,
           input_text: activityText,
         }),
       });
@@ -43,7 +43,7 @@ function Activity() {
         setResult(data);
         setActivityText("");
       } else {
-        alert("Error: " + data.message);
+        alert("Error: " + (data.message || "Unknown error"));
       }
     } catch (error) {
       console.error("Error logging activity:", error);
@@ -66,7 +66,7 @@ function Activity() {
         <textarea
           value={activityText}
           onChange={(e) => setActivityText(e.target.value)}
-          placeholder="I drove 30km in a diesel car"
+          placeholder="I drove 10km in a cab. I ate 2 burgers."
           className="w-full px-4 py-3 rounded-md border border-gray-600 bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none"
           rows={3}
         />
@@ -79,21 +79,51 @@ function Activity() {
           loading ? "bg-gray-500" : "bg-blue-600 hover:bg-blue-700 text-white"
         }`}
       >
-        {loading ? "Calculating..." : "Log Activity"}
+        {loading ? "Calculating..." : "Calculate Carbon Footprint"}
       </button>
 
+      {/* --- RESULT SECTION (Updated) --- */}
       {result && (
-        <div className="mt-8 p-6 bg-gray-800 rounded-lg shadow-lg w-full max-w-xl border border-green-500">
-          <h3 className="text-2xl font-bold text-green-400 mb-2">Result</h3>
-          <p className="text-white text-lg">
-            Activity: <span className="font-light">{result.activity}</span>
-          </p>
-          <p className="text-white text-lg mt-2">
-            Carbon Footprint: <span className="text-3xl font-bold text-green-300">{result.co2e_kg} kg</span> CO₂e
-          </p>
+        <div className="mt-8 w-full max-w-xl space-y-4">
+          
+          {/* 1. Total Summary Box */}
+          <div className="p-6 bg-gray-800 rounded-lg shadow-lg border border-green-500 text-center">
+            <h3 className="text-xl font-bold text-green-400 mb-2">Total Impact</h3>
+            <p className="text-white text-lg">
+              <span className="text-4xl font-bold text-green-300">
+                {result.total_co2e_kg}
+              </span>{" "}
+              kg CO₂e
+            </p>
+            <p className="text-sm text-gray-400 mt-2">{result.message}</p>
+          </div>
+
+          {/* 2. Individual Item Breakdown (If multiple sentences) */}
+          {result.activities && result.activities.length > 0 && (
+            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+              <h4 className="text-gray-400 text-sm uppercase tracking-wide mb-3">Breakdown</h4>
+              <ul className="space-y-3">
+                {result.activities.map((item, index) => (
+                  <li key={index} className="flex justify-between items-center border-b border-gray-700 pb-2 last:border-0">
+                    <div>
+                      <span className="block font-medium text-white capitalize">
+                        {item.activity_type} ({item.key})
+                      </span>
+                      <span className="text-xs text-gray-400">
+                        {item.quantity} {item.unit}
+                      </span>
+                    </div>
+                    <span className="font-bold text-green-400">
+                      {item.co2e} kg
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
-      
+
       <Link to="/dashboard" className="mt-8 text-blue-400 hover:text-blue-300 underline">
         Back to Dashboard
       </Link>
