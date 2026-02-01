@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 function Activity() {
@@ -6,6 +6,11 @@ function Activity() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [username, setUsername] = useState("");
+  const [isRecording, setIsRecording] = useState(false);
+  const [audioUrl, setAudioUrl] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -53,6 +58,78 @@ function Activity() {
     }
   };
 
+  // --- Microphone recording handlers ---
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunksRef.current = [];
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) audioChunksRef.current.push(ev.data);
+      };
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const url = URL.createObjectURL(blob);
+        setAudioUrl(url);
+        // stop all tracks
+        stream.getTracks().forEach((t) => t.stop());
+        // auto-upload after stop
+        uploadAudio(blob);
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (err) {
+      console.error("Microphone error:", err);
+      alert("Could not access microphone. Please allow microphone access in your browser.");
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      mediaRecorderRef.current = null;
+    }
+  };
+
+  const uploadAudio = async (blob) => {
+    if (!username) {
+      alert('No username found. Please login first.');
+      return;
+    }
+
+    setIsUploading(true);
+    setResult(null);
+
+    try {
+      const formData = new FormData();
+      formData.append('username', username);
+      formData.append('audio', blob, 'recording.webm');
+
+      const response = await fetch('http://localhost:8000/api/log-activity-audio/', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        setResult(data);
+      } else {
+        alert('Error: ' + (data.message || 'Audio processing failed'));
+      }
+    } catch (error) {
+      console.error('Upload error:', error);
+      alert('Could not upload audio to server.');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   return (
     <div className="bg-gray-900 min-h-screen flex flex-col items-center justify-center px-6 py-12 text-white">
       <h1 className="text-3xl font-bold mb-4" style={{ color: "#037880" }}>
@@ -70,6 +147,40 @@ function Activity() {
           className="w-full px-4 py-3 rounded-md border border-gray-600 bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none"
           rows={3}
         />
+      </div>
+
+      {/* --- Microphone Recording Controls --- */}
+      <div className="w-full max-w-xl mt-6">
+        <label className="block text-lg font-medium mb-2" style={{ color: "#037880" }}>
+          Or record your activity (microphone):
+        </label>
+
+        <div className="flex items-center space-x-3">
+          {!isRecording ? (
+            <button
+              onClick={startRecording}
+              className="font-semibold py-2 px-4 rounded-md bg-green-600 hover:bg-green-700 text-white"
+            >
+              Start Recording
+            </button>
+          ) : (
+            <button
+              onClick={stopRecording}
+              className="font-semibold py-2 px-4 rounded-md bg-red-600 hover:bg-red-700 text-white"
+            >
+              Stop Recording
+            </button>
+          )}
+
+          {isUploading && (
+            <span className="text-sm text-yellow-300">Uploading audio...</span>
+          )}
+
+          {audioUrl && (
+            <audio className="ml-4" controls src={audioUrl} />
+          )}
+        </div>
+        <p className="text-xs text-gray-400 mt-2">Tip: After stopping, the recording will be uploaded automatically.</p>
       </div>
 
       <button
