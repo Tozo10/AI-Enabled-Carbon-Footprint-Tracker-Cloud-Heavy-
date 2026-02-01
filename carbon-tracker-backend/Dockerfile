@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y build-essential
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates
 
 # 1. UPGRADE PIP & INSTALL BUILD TOOLS
 RUN pip install --upgrade pip setuptools wheel
@@ -23,6 +23,9 @@ FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
+# Install ca-certificates (needed for SSL/NLTK downloads and IBM API calls)
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+
 # Create a non-root user and group
 RUN addgroup --system app && adduser --system --ingroup app appuser
 
@@ -35,9 +38,22 @@ RUN pip install --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir /wheels/*
 
 # --- NEW: DOWNLOAD NLTK DATA ---
-# We define a custom path so the non-root user can access it easily if needed
+# Set the data path and ensure the directory exists with proper permissions
 ENV NLTK_DATA=/usr/share/nltk_data
-RUN python -m nltk.downloader -d /usr/share/nltk_data punkt punkt_tab
+RUN mkdir -p $NLTK_DATA && chown -R appuser:app $NLTK_DATA
+
+# Robust NLTK download script:
+# 1. It handles SSL certificate verification issues (common in college/corporate networks).
+# 2. It uses python -c to avoid interactive prompts that cause EOFErrors.
+RUN python -c "import nltk; import ssl; \
+try: \
+    _create_unverified_https_context = ssl._create_unverified_context; \
+except AttributeError: \
+    pass; \
+else: \
+    ssl._create_default_https_context = _create_unverified_https_context; \
+nltk.download('punkt', download_dir='$NLTK_DATA'); \
+nltk.download('punkt_tab', download_dir='$NLTK_DATA')"
 # -------------------------------
 
 # Copy project code and change ownership

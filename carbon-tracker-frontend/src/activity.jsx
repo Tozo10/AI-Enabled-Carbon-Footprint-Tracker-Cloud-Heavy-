@@ -8,7 +8,7 @@ function Activity() {
   const [username, setUsername] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [audioUrl, setAudioUrl] = useState(null);
-  const [isUploading, setIsUploading] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const navigate = useNavigate();
@@ -18,12 +18,16 @@ function Activity() {
     const storedUser = localStorage.getItem("username");
     if (!storedUser) {
       alert("You must log in first!");
-      navigate("/"); // Kick them back to login page
+      navigate("/"); 
     } else {
       setUsername(storedUser);
     }
   }, [navigate]);
 
+  /**
+   * STEP 2: CALCULATE CARBON
+   * This sends the text from the box to the backend for analysis.
+   */
   const handleLogActivity = async () => {
     if (!activityText) return;
 
@@ -42,6 +46,14 @@ function Activity() {
         }),
       });
 
+      // Handle non-JSON responses gracefully (prevents Unexpected token '<' errors)
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const text = await response.text();
+        console.error("Expected JSON but got:", text);
+        throw new Error(`Server returned an error page (Status: ${response.status}). Ensure the backend is running and URLs are correct.`);
+      }
+
       const data = await response.json();
 
       if (response.ok) {
@@ -52,13 +64,25 @@ function Activity() {
       }
     } catch (error) {
       console.error("Error logging activity:", error);
-      alert("Could not connect to server.");
+      alert(error.message || "Could not connect to server.");
     } finally {
       setLoading(false);
     }
   };
 
-  // --- Microphone recording handlers ---
+  /**
+   * KEYBOARD HANDLER
+   * Allows submitting by pressing Enter (without Shift)
+   */
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault(); 
+      handleLogActivity();
+    }
+  };
+
+  // --- AUDIO RECORDING LOGIC ---
+
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -74,17 +98,19 @@ function Activity() {
         const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         const url = URL.createObjectURL(blob);
         setAudioUrl(url);
-        // stop all tracks
+        
+        // Cleanup microphone tracks
         stream.getTracks().forEach((t) => t.stop());
-        // auto-upload after stop
-        uploadAudio(blob);
+        
+        // Start Step 1: Transcription
+        transcribeAudio(blob);
       };
 
       mediaRecorder.start();
       setIsRecording(true);
     } catch (err) {
       console.error("Microphone error:", err);
-      alert("Could not access microphone. Please allow microphone access in your browser.");
+      alert("Could not access microphone. Please ensure permissions are granted in your browser settings.");
     }
   };
 
@@ -96,148 +122,165 @@ function Activity() {
     }
   };
 
-  const uploadAudio = async (blob) => {
-    if (!username) {
-      alert('No username found. Please login first.');
-      return;
-    }
-
-    setIsUploading(true);
-    setResult(null);
+  /**
+   * STEP 1: TRANSCRIBE SPEECH
+   * Converts audio to text and puts it in the textarea.
+   */
+  const transcribeAudio = async (blob) => {
+    setIsTranscribing(true);
 
     try {
       const formData = new FormData();
-      formData.append('username', username);
       formData.append('audio', blob, 'recording.webm');
 
-      const response = await fetch('http://localhost:8000/api/log-activity-audio/', {
+      // Ensure this URL exactly matches your urls.py (including the trailing slash)
+      const response = await fetch('http://localhost:8000/api/speech-to-text/', {
         method: 'POST',
         body: formData,
       });
 
+      // Robust check for JSON content type
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const htmlError = await response.text();
+        console.error("Backend returned HTML instead of JSON:", htmlError);
+        
+        // Custom message for 404s
+        if (response.status === 404) {
+          throw new Error("Endpoint /api/speech-to-text/ not found (404). Please rebuild your Docker backend.");
+        }
+        throw new Error(`Server Error (${response.status}). Check backend terminal logs.`);
+      }
+
       const data = await response.json();
 
-      if (response.ok) {
-        setResult(data);
+      if (response.ok && data.transcript) {
+        setActivityText(data.transcript);
       } else {
-        alert('Error: ' + (data.message || 'Audio processing failed'));
+        alert('Transcription failed: ' + (data.message || 'No speech detected.'));
       }
     } catch (error) {
-      console.error('Upload error:', error);
-      alert('Could not upload audio to server.');
+      console.error('Transcription error:', error);
+      alert(`Speech Service Error: ${error.message}`);
     } finally {
-      setIsUploading(false);
+      setIsTranscribing(false);
     }
   };
 
   return (
-    <div className="bg-gray-900 min-h-screen flex flex-col items-center justify-center px-6 py-12 text-white">
-      <h1 className="text-3xl font-bold mb-4" style={{ color: "#037880" }}>
-        Log Your Activity
+    <div className="bg-gray-900 min-h-screen flex flex-col items-center justify-center px-6 py-12 text-white font-sans">
+      <h1 className="text-4xl font-extrabold mb-8 tracking-tight" style={{ color: "#037880" }}>
+        Carbon Activity Logger
       </h1>
 
-      <div className="w-full max-w-xl">
-        <label className="block text-xl font-medium mb-2" style={{ color: "#037880" }}>
-          Input text:
+      <div className="w-full max-w-2xl bg-gray-800 p-8 rounded-2xl shadow-2xl border border-gray-700">
+        
+        {/* TEXT AREA INPUT */}
+        <label className="block text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
+          What did you do today?
         </label>
         <textarea
           value={activityText}
           onChange={(e) => setActivityText(e.target.value)}
-          placeholder="I drove 10km in a cab. I ate 2 burgers."
-          className="w-full px-4 py-3 rounded-md border border-gray-600 bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none"
-          rows={3}
+          onKeyDown={handleKeyDown}
+          placeholder="Example: I drove 15km in a small car. I ate a beef burger."
+          className="w-full px-5 py-4 rounded-xl border border-gray-600 bg-gray-900 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 transition-all resize-none text-lg"
+          rows={4}
         />
-      </div>
+        <div className="flex justify-between mt-2">
+            <span className="text-xs text-gray-500 italic">Pro-tip: Press Enter to calculate immediately.</span>
+            {isTranscribing && (
+                <span className="text-xs text-cyan-400 animate-pulse font-bold">Processing your voice...</span>
+            )}
+        </div>
 
-      {/* --- Microphone Recording Controls --- */}
-      <div className="w-full max-w-xl mt-6">
-        <label className="block text-lg font-medium mb-2" style={{ color: "#037880" }}>
-          Or record your activity (microphone):
-        </label>
-
-        <div className="flex items-center space-x-3">
+        {/* VOICE CONTROLS */}
+        <div className="mt-8 flex items-center justify-center space-x-6 border-t border-gray-700 pt-8">
           {!isRecording ? (
             <button
               onClick={startRecording}
-              className="font-semibold py-2 px-4 rounded-md bg-green-600 hover:bg-green-700 text-white"
+              className="group flex flex-col items-center space-y-2 focus:outline-none"
             >
-              Start Recording
+              <div className="w-16 h-16 bg-cyan-600 rounded-full flex items-center justify-center group-hover:bg-cyan-500 transition-colors shadow-lg">
+                <span className="text-2xl">🎤</span>
+              </div>
+              <span className="text-xs font-bold text-cyan-400 group-hover:text-cyan-300">START VOICE</span>
             </button>
           ) : (
             <button
               onClick={stopRecording}
-              className="font-semibold py-2 px-4 rounded-md bg-red-600 hover:bg-red-700 text-white"
+              className="group flex flex-col items-center space-y-2 focus:outline-none"
             >
-              Stop Recording
+              <div className="w-16 h-16 bg-red-600 rounded-full flex items-center justify-center animate-pulse shadow-lg">
+                <span className="text-2xl">⏹️</span>
+              </div>
+              <span className="text-xs font-bold text-red-400">STOP & CONVERT</span>
             </button>
           )}
-
-          {isUploading && (
-            <span className="text-sm text-yellow-300">Uploading audio...</span>
-          )}
-
-          {audioUrl && (
-            <audio className="ml-4" controls src={audioUrl} />
-          )}
-        </div>
-        <p className="text-xs text-gray-400 mt-2">Tip: After stopping, the recording will be uploaded automatically.</p>
-      </div>
-
-      <button
-        onClick={handleLogActivity}
-        disabled={loading}
-        className={`mt-6 font-semibold py-2 px-6 rounded-md transition duration-300 ${
-          loading ? "bg-gray-500" : "bg-blue-600 hover:bg-blue-700 text-white"
-        }`}
-      >
-        {loading ? "Calculating..." : "Calculate Carbon Footprint"}
-      </button>
-
-      {/* --- RESULT SECTION (Updated) --- */}
-      {result && (
-        <div className="mt-8 w-full max-w-xl space-y-4">
           
-          {/* 1. Total Summary Box */}
-          <div className="p-6 bg-gray-800 rounded-lg shadow-lg border border-green-500 text-center">
-            <h3 className="text-xl font-bold text-green-400 mb-2">Total Impact</h3>
-            <p className="text-white text-lg">
-              <span className="text-4xl font-bold text-green-300">
-                {result.total_co2e_kg}
-              </span>{" "}
-              kg CO₂e
-            </p>
-            <p className="text-sm text-gray-400 mt-2">{result.message}</p>
-          </div>
-
-          {/* 2. Individual Item Breakdown (If multiple sentences) */}
-          {result.activities && result.activities.length > 0 && (
-            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-              <h4 className="text-gray-400 text-sm uppercase tracking-wide mb-3">Breakdown</h4>
-              <ul className="space-y-3">
-                {result.activities.map((item, index) => (
-                  <li key={index} className="flex justify-between items-center border-b border-gray-700 pb-2 last:border-0">
-                    <div>
-                      <span className="block font-medium text-white capitalize">
-                        {item.activity_type} ({item.key})
-                      </span>
-                      <span className="text-xs text-gray-400">
-                        {item.quantity} {item.unit}
-                      </span>
-                    </div>
-                    <span className="font-bold text-green-400">
-                      {item.co2e} kg
-                    </span>
-                  </li>
-                ))}
-              </ul>
+          {audioUrl && !isRecording && (
+            <div className="hidden md:block">
+               <audio src={audioUrl} controls className="h-8 opacity-50 hover:opacity-100 transition-opacity" />
             </div>
           )}
         </div>
+
+        {/* CALCULATION BUTTON */}
+        <button
+          onClick={handleLogActivity}
+          disabled={loading || isTranscribing || !activityText}
+          className={`mt-10 w-full font-bold py-4 px-8 rounded-xl text-lg transition-all transform active:scale-95 shadow-xl ${
+            loading || isTranscribing || !activityText
+              ? "bg-gray-700 text-gray-500 cursor-not-allowed"
+              : "bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white"
+          }`}
+        >
+          {loading ? "Analyzing Data..." : "Calculate Carbon Footprint"}
+        </button>
+      </div>
+
+      {/* RESULTS DISPLAY */}
+      {result && (
+        <div className="mt-10 w-full max-w-2xl animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <div className="bg-gray-800 p-8 rounded-2xl border-l-8 border-green-500 shadow-2xl">
+            <div className="flex justify-between items-start mb-4">
+               <h3 className="text-2xl font-bold text-white">Impact Summary</h3>
+               <span className="px-3 py-1 bg-green-900 text-green-300 text-xs font-bold rounded-full">LOGGED</span>
+            </div>
+            
+            <div className="flex flex-col items-center py-4">
+              <span className="text-6xl font-black text-green-400">
+                {result.total_co2e_kg}
+              </span>
+              <span className="text-xl font-medium text-gray-400 mt-2">kg CO₂e Total Impact</span>
+            </div>
+
+            {result.activities && result.activities.length > 0 && (
+              <div className="mt-6 space-y-3">
+                <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest border-b border-gray-700 pb-2">Details</h4>
+                {result.activities.map((act, idx) => (
+                  <div key={idx} className="flex justify-between text-sm">
+                    <span className="text-gray-300 capitalize">{act.activity_type}: {act.key}</span>
+                    <span className="text-green-500 font-mono font-bold">+{act.co2e} kg</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
-      <Link to="/dashboard" className="mt-8 text-blue-400 hover:text-blue-300 underline">
-        Back to Dashboard
-      </Link>
+      <div className="mt-12 flex space-x-6 text-sm">
+        <Link to="/dashboard" className="text-gray-500 hover:text-white transition-colors underline decoration-gray-700">
+          Back to Dashboard
+        </Link>
+        <button 
+          onClick={() => {setResult(null); setActivityText("");}} 
+          className="text-gray-500 hover:text-red-400 transition-colors"
+        >
+          Clear All
+        </button>
+      </div>
     </div>
   );
 }
