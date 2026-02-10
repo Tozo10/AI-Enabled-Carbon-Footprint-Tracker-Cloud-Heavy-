@@ -1,6 +1,13 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
+
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faMicrophone  } from '@fortawesome/free-solid-svg-icons';
+// import { byPrefixAndName } from '@awesome.me/kit-KIT_CODE/icons'
+import { faCompactDisc } from '@fortawesome/free-solid-svg-icons';
+
+
 function Activity() {
   const [activityText, setActivityText] = useState("");
   const [result, setResult] = useState(null);
@@ -202,8 +209,9 @@ function Activity() {
               className="group flex flex-col items-center space-y-2 focus:outline-none"
             >
               <div className="w-16 h-16 bg-cyan-600 rounded-full flex items-center justify-center group-hover:bg-cyan-500 transition-colors shadow-lg">
-                <span className="text-2xl">🎤</span>
-              </div>
+  <FontAwesomeIcon icon={faMicrophone} className="text-2xl text-white" />
+</div>
+
               <span className="text-xs font-bold text-cyan-400 group-hover:text-cyan-300">START VOICE</span>
             </button>
           ) : (
@@ -212,7 +220,8 @@ function Activity() {
               className="group flex flex-col items-center space-y-2 focus:outline-none"
             >
               <div className="w-16 h-16 bg-red-600 rounded-full flex items-center justify-center animate-pulse shadow-lg">
-                <span className="text-2xl">⏹️</span>
+                <span className="text-2xl"><FontAwesomeIcon icon={faCompactDisc} />
+</span>
               </div>
               <span className="text-xs font-bold text-red-400">STOP & CONVERT</span>
             </button>
