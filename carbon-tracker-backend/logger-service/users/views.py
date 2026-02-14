@@ -237,7 +237,50 @@ def get_user_activities_api(request):
     except Exception as e:
         return Response({"message": f"History retrieval failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_leaderboard_api(request):
+    """
+    Fetches all logs from Cloudant and aggregates CO2 per user.
+    """
+    try:
+        from .cloudant_db import get_cloudant_client
+        client = get_cloudant_client()
+        if not client:
+            return Response({"message": "Cloudant connection failed"}, status=500)
 
+        db_name = "activity-logs"
+        # Fetch all documents (for a small/medium project scale)
+        # For production, you'd use a Cloudant Design Document / View
+        result = client.post_all_docs(db=db_name, include_docs=True).get_result()
+        rows = result.get('rows', [])
+
+        user_totals = {}
+
+        for row in rows:
+            doc = row.get('doc')
+            if doc and 'username' in doc and 'co2e' in doc:
+                uname = doc['username']
+                co2 = float(doc['co2e'])
+                user_totals[uname] = user_totals.get(uname, 0) + co2
+
+        # Format and sort for the leaderboard (Top 5)
+        formatted_leaderboard = []
+        # Sorting by total CO2 reduced/tracked
+        sorted_users = sorted(user_totals.items(), key=lambda x: x[1], reverse=True)[:5]
+
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        for index, (name, total) in enumerate(sorted_users):
+            formatted_leaderboard.append({
+                "rank": index + 1,
+                "name": name,
+                "contribution": f"{round(total, 2)} kg CO₂",
+                "medal": medals[index] if index < len(medals) else str(index + 1)
+            })
+
+        return Response({"status": "success", "leaderboard": formatted_leaderboard})
+    except Exception as e:
+        return Response({"message": str(e)}, status=500)
 # --- 4. STANDALONE TRANSCRIPTION (FOR TEXTBOX POPULATION) ---
 @api_view(['POST'])
 @permission_classes([AllowAny])

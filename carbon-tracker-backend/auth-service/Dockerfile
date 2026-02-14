@@ -10,12 +10,12 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y build-essential
 
 # 1. UPGRADE PIP & INSTALL BUILD TOOLS
-RUN pip install --upgrade pip setuptools wheel
+RUN pip install --upgrade pip "setuptools<70.0.0" wheel
 
 COPY requirements.txt .
 
 # 2. Install Python dependencies
-RUN pip wheel --no-cache-dir --wheel-dir /app/wheels -r requirements.txt
+RUN pip wheel --no-cache-dir --no-build-isolation --wheel-dir /app/wheels -r requirements.txt
 
 
 # ---- Stage 2: Final Stage ----
