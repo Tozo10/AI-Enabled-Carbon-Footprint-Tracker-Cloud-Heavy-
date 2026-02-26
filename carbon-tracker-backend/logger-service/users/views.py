@@ -9,6 +9,9 @@ from rest_framework.response import Response
 from rest_framework import status
 from decouple import config
 
+# Fuzzy Matching Import
+from thefuzz import fuzz
+
 # Internal Modules
 from .carbon_calculator import calculate_co2e
 from .cloudant_db import save_activity_log, get_user_logs_cloudant
@@ -35,28 +38,74 @@ def get_stt_service():
     stt.set_service_url(url)
     return stt
 
-# --- HELPER: DYNAMIC FALLBACK CLASSIFIER ---
+
+# --- NEW HELPER: INTELLIGENT NUMBER PARSER ---
+# Handles conflicts where users type "two" instead of "2"
+WORD_NUM_DICT = {
+    'zero': 0, 'one': 1, 'a': 1, 'an': 1, 'two': 2, 'three': 3, 'four': 4, 
+    'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
+    'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 14, 'fifteen': 15,
+    'sixteen': 16, 'seventeen': 17, 'eighteen': 18, 'nineteen': 19, 'twenty': 20,
+    'thirty': 30, 'forty': 40, 'fifty': 50, 'sixty': 60, 'seventy': 70, 
+    'eighty': 80, 'ninety': 90, 'hundred': 100, 'half': 0.5, 'quarter': 0.25,
+    'twice': 2
+}
+
+def extract_quantity(text):
+    """Extracts quantities, handling digits, decimals, and English words perfectly."""
+    text_lower = text.lower()
+    
+    # 1. First, check for actual numerical digits (e.g., 5, 2.5)
+    numbers = re.findall(r"[-+]?\d*\.\d+|\d+", text_lower)
+    if numbers:
+        return float(numbers[0])
+        
+    # 2. If no digits, check for word-based numbers (e.g., "two", "half")
+    words = re.findall(r'\b[a-z]+\b', text_lower)
+    for word in words:
+        if word in WORD_NUM_DICT:
+            return float(WORD_NUM_DICT[word])
+            
+    # Default fallback if no quantity is found at all
+    return 1.0
+
+
+# --- HELPER: DYNAMIC FALLBACK CLASSIFIER (UPGRADED WITH FUZZY MATCHING) ---
 def fallback_classify(text):
     """
     Acts as a safety net if the AI Service is down or fails to extract data.
+    Now uses thefuzz to handle typos with an 80% accuracy threshold.
     """
-    text = text.lower()
+    text_lower = text.lower()
     
-    # Extract first number found in text
-    numbers = re.findall(r"[-+]?\d*\.\d+|\d+", text)
-    qty = float(numbers[0]) if numbers else 1.0
+    # Extract precise number from text/words using the new parser
+    qty = extract_quantity(text_lower)
 
     category = 'Unknown'
     unit = 'unit'
+    
+    # Break text into isolated words for fuzzy comparison
+    words = re.findall(r'\b[a-z]+\b', text_lower)
+
+    def matches_category(keywords, threshold=80):
+        for w in words:
+            for k in keywords:
+                if fuzz.ratio(w, k) >= threshold:
+                    return True
+        return False
 
     # Keyword mapping for broad categories
-    if any(x in text for x in ['eat', 'ate', 'drink', 'food', 'meal', 'burger', 'apple', 'rice', 'chicken']):
+    food_keys = ['eat', 'ate', 'drink', 'food', 'meal', 'burger', 'apple', 'rice', 'chicken']
+    transport_keys = ['drive', 'drove', 'ride', 'took', 'cab', 'bus', 'train', 'flight', 'fly', 'car']
+    energy_keys = ['light', 'electricity', 'power', 'kwh', 'ac', 'fan', 'use', 'used']
+
+    if matches_category(food_keys):
         category = 'FOOD'
         unit = 'serving'
-    elif any(x in text for x in ['drive', 'drove', 'ride', 'took', 'cab', 'bus', 'train', 'flight', 'fly', 'car']):
+    elif matches_category(transport_keys):
         category = 'TRANSPORT'
         unit = 'km'
-    elif any(x in text for x in ['light', 'electricity', 'power', 'kwh', 'ac', 'fan', 'use', 'used']):
+    elif matches_category(energy_keys):
         category = 'ENERGY'
         unit = 'kWh'
 
@@ -67,11 +116,25 @@ def fallback_classify(text):
         known_keys = []
 
     found_key = None
-    known_keys.sort(key=len, reverse=True) # Check longest keys first
+    best_score = 0
+    
     for db_key in known_keys:
-        if db_key in text:
+        # 1. Exact match check (fastest, catches perfect spelling immediately)
+        if db_key in text_lower:
             found_key = db_key
+            best_score = 100
             break
+            
+        # 2. Fuzzy match check (catches typos like 'buger' against 'burger')
+        for word in words:
+            score = fuzz.ratio(word, db_key)
+            if score > best_score:
+                best_score = score
+                found_key = db_key
+                
+    # Enforce the 80% confidence threshold
+    if best_score < 80:
+        found_key = None
     
     if found_key:
         return category, found_key, qty, unit
@@ -83,21 +146,26 @@ def fallback_classify(text):
 
     return 'Unknown', None, 0, None
 
+
 # --- SHARED PROCESSING LOGIC ---
 def process_text_to_carbon(input_text, username):
     """
     Core engine that splits text into sentences, analyzes them, 
     calculates carbon, and saves to the Cloudant history.
     """
-    # 1. Clean and split input into sentences
-    raw_lines = input_text.split('\n')
-    sentences = []
-    for line in raw_lines:
-        line = line.strip()
-        if not line: continue
-        if "." in line: line = line.replace(".", ". ")
-        sub_sentences = nltk.tokenize.sent_tokenize(line)
-        sentences.extend(sub_sentences)
+    # 1. Clean and safely split multi-line inputs into logical sentences
+    # Replace newlines with periods to force NLTK to recognize them as separate actions
+    normalized_text = input_text.replace('\n', '. ')
+    
+    # Replace commas with periods (safely ignoring commas used inside numbers like 1,000)
+    normalized_text = re.sub(r'(?<!\d),(?!\d)', '. ', normalized_text)
+    normalized_text = normalized_text.replace(', ', '. ')
+    
+    # Catch "and" connectors (e.g., "I ate an apple and I drove a car") and split them
+    normalized_text = re.sub(r'\b(and then|and i|and also)\b', '.', normalized_text, flags=re.IGNORECASE)
+
+    # Tokenize into isolated sentences
+    sentences = nltk.tokenize.sent_tokenize(normalized_text)
     sentences = [s.strip() for s in sentences if len(s.strip()) > 2]
     
     logged_activities = []
@@ -128,7 +196,14 @@ def process_text_to_carbon(input_text, username):
         if analysis_results and "error" not in analysis_results:
             activity_type = analysis_results.get('activity_type', 'Unknown')
             key = analysis_results.get('key')
-            quantity = analysis_results.get('quantity')
+            
+            # Safeguard: If the AI failed to resolve a word like "two" into an int, force our parser to fix it
+            raw_qty = analysis_results.get('quantity')
+            if raw_qty is None or (isinstance(raw_qty, str) and not raw_qty.replace('.', '', 1).isdigit()):
+                quantity = extract_quantity(clean_text)
+            else:
+                quantity = float(raw_qty)
+                
             unit = analysis_results.get('unit')
 
         if activity_type == 'Unknown' or not key:
@@ -281,6 +356,7 @@ def get_leaderboard_api(request):
         return Response({"status": "success", "leaderboard": formatted_leaderboard})
     except Exception as e:
         return Response({"message": str(e)}, status=500)
+
 # --- 4. STANDALONE TRANSCRIPTION (FOR TEXTBOX POPULATION) ---
 @api_view(['POST'])
 @permission_classes([AllowAny])
