@@ -1,73 +1,46 @@
-# carbon-tracker-backend/users/carbon_calculator.py
-
-try:
-    from .models import EmissionFactor
-except ImportError:
-    EmissionFactor = None
-
-def calculate_co2e(key, quantity, unit):
-    print(f"DEBUG: --- CALCULATOR STARTED ---")
+def calculate_co2e(key, quantity, unit, request_user=None):
     print(f"DEBUG: Input Key='{key}', Qty={quantity}, Unit='{unit}'")
-
+    
     if not key or quantity is None:
-        return 0.0
+        return 0.0, False
 
     try:
-        # 1. Normalize & Synonyms
+        # Normalize: 'Paneer Indian' -> 'paneer_indian'
         raw_key = str(key).lower().strip()
+        search_key = raw_key.replace(" ", "_") 
+        
         quantity = float(quantity)
-        
-        # MAPPING: "cab" -> "car"
-        synonyms = {
-            "cab": "car", "taxi": "car", "uber": "car", "ride": "car",
-            "bus": "public_transport", "metro": "public_transport", "train": "public_transport",
-            "burger": "beef", "steak": "beef", "meat": "beef",
-            "power": "electricity", "lights": "electricity"
-        }
-
-        # Use synonym if exists, otherwise use raw key
-        normalized_key = synonyms.get(raw_key, raw_key)
-        print(f"DEBUG: Normalized '{raw_key}' -> '{normalized_key}'")
-
-        # 2. Define Factors (Fallback)
-        # These are used if the Database is empty or fails
-        factors = {
-            "car": 0.19,
-            "diesel_car": 0.17,
-            "public_transport": 0.04,
-            "flight": 0.25,
-            "beef": 15.5,
-            "poultry": 1.8,
-            "electricity": 0.5
-        }
-
-        # 3. Get Factor
         factor_value = 0.0
-        
-        # Try Database First
+        is_verified = False
+
         if EmissionFactor:
-            try:
-                ef = EmissionFactor.objects.get(key__iexact=normalized_key)
+            # 1. Look for the normalized underscore key (Paneer_Indian)
+            ef = EmissionFactor.objects.filter(key__iexact=search_key, status='verified').first()
+            
+            # 2. Look for the raw space key (Paneer Indian)
+            if not ef:
+                ef = EmissionFactor.objects.filter(key__iexact=raw_key, status='verified').first()
+
+            # 3. Look for User-Added Pending Data
+            if not ef and request_user:
+                ef = EmissionFactor.objects.filter(
+                    key__iexact=search_key, 
+                    status='pending', 
+                    added_by=request_user
+                ).first()
+
+            if ef:
                 factor_value = ef.co2e_per_unit
-                print(f"DEBUG: Found in DB: {factor_value}")
-            except:
-                print("DEBUG: Not in DB, checking fallback list...")
-
-        # Try Fallback Second (if DB failed)
-        if factor_value == 0.0:
-            factor_value = factors.get(normalized_key, 0.0)
-            print(f"DEBUG: Fallback Factor: {factor_value}")
-
-        # 4. Calculate
-        co2e = quantity * factor_value
+                is_verified = (ef.status == 'verified')
         
-        # Simple Unit Conversions
-        if unit and unit.lower() in ['mile', 'miles']:
-            co2e = co2e * 1.6  # Convert miles to km logic
+        # Fallback to defaults if DB fails
+        if factor_value == 0.0:
+            defaults = {"paneer": 8.2, "electricity": 0.5, "car": 0.19}
+            factor_value = defaults.get(raw_key, 0.0)
+            is_verified = False 
 
-        print(f"DEBUG: Final Result = {co2e}")
-        return round(co2e, 2)
+        return round(quantity * factor_value, 2), is_verified
 
     except Exception as e:
-        print(f"DEBUG: Calculator Error: {e}")
-        return 0.0
+        print(f"Error: {e}")
+        return 0.0, False

@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { faCheckCircle, faClock } from '@fortawesome/free-solid-svg-icons';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 
 function ActivitiesList() {
   const [activities, setActivities] = useState([]);
@@ -53,26 +55,42 @@ function ActivitiesList() {
           </div>
         ) : (
           <div className="bg-gray-800 rounded-lg shadow-lg overflow-hidden">
-            <table className="w-full text-left">
-              <thead className="bg-gray-700 text-gray-300">
-                <tr>
-                  <th className="p-4">Input</th>
-                  <th className="p-4">Type</th>
-                  <th className="p-4">Quantity</th>
-                  <th className="p-4">Carbon (CO₂e)</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-700">
-                {activities.map((act) => (
-                  <tr key={act.id} className="hover:bg-gray-750 transition">
-                    <td className="p-4 text-gray-300 italic">"{act.input_text}"</td>
-                    <td className="p-4 font-semibold text-blue-300">{act.activity_type}</td>
-                    <td className="p-4">{act.quantity} {act.unit}</td>
-                    <td className="p-4 font-bold text-green-400">{act.co2e} kg</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+           <table className="w-full text-left">
+  <thead className="bg-gray-700 text-gray-300">
+    <tr>
+      <th className="p-4 text-center">Status</th> {/* New Status Column */}
+      <th className="p-4">Input</th>
+      <th className="p-4">Type</th>
+      <th className="p-4">Quantity</th>
+      <th className="p-4">Carbon (CO₂e)</th>
+    </tr>
+  </thead>
+  <tbody className="divide-y divide-gray-700">
+    {activities.map((act) => (
+      <tr key={act.id || act.timestamp} className="hover:bg-gray-750 transition">
+        {/* --- STATUS ICON LOGIC --- */}
+        <td className="p-4 text-center">
+          {act.is_verified ? (
+            <span title="Government Verified (CEA/BEE India)">
+              <FontAwesomeIcon icon={faCheckCircle} className="text-green-500" />
+            </span>
+          ) : (
+            <span title="User Added (Pending Review)">
+              <FontAwesomeIcon icon={faClock} className="text-yellow-500 opacity-70" />
+            </span>
+          )}
+        </td>
+        
+        <td className="p-4 text-gray-300 italic">"{act.input_text}"</td>
+        <td className="p-4 font-semibold text-blue-300">{act.activity_type}</td>
+        <td className="p-4 text-gray-400">{act.quantity} {act.unit}</td>
+        <td className="p-4 font-bold text-green-400">
+          {parseFloat(act.co2e).toFixed(2)} kg
+        </td>
+      </tr>
+    ))}
+  </tbody>
+</table>
           </div>
         )}
       </div>

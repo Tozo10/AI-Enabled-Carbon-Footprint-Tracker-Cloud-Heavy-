@@ -8,7 +8,12 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 from decouple import config
-
+from rest_framework import status
+from rest_framework.response import Response
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from .models import EmissionFactor
+from .serializers import EmissionFactorSerializer
 # Fuzzy Matching Import
 from thefuzz import fuzz
 
@@ -148,23 +153,17 @@ def fallback_classify(text):
 
 
 # --- SHARED PROCESSING LOGIC ---
-def process_text_to_carbon(input_text, username):
+def process_text_to_carbon(input_text, user_obj): # Changed 'username' to 'user_obj' to get request.user
     """
-    Core engine that splits text into sentences, analyzes them, 
-    calculates carbon, and saves to the Cloudant history.
+    Core engine that splits text, analyzes, calculates, and saves.
     """
-    # 1. Clean and safely split multi-line inputs into logical sentences
-    # Replace newlines with periods to force NLTK to recognize them as separate actions
-    normalized_text = input_text.replace('\n', '. ')
+    username = user_obj.username # Extract name for Cloudant
     
-    # Replace commas with periods (safely ignoring commas used inside numbers like 1,000)
+    normalized_text = input_text.replace('\n', '. ')
     normalized_text = re.sub(r'(?<!\d),(?!\d)', '. ', normalized_text)
     normalized_text = normalized_text.replace(', ', '. ')
-    
-    # Catch "and" connectors (e.g., "I ate an apple and I drove a car") and split them
     normalized_text = re.sub(r'\b(and then|and i|and also)\b', '.', normalized_text, flags=re.IGNORECASE)
 
-    # Tokenize into isolated sentences
     sentences = nltk.tokenize.sent_tokenize(normalized_text)
     sentences = [s.strip() for s in sentences if len(s.strip()) > 2]
     
@@ -177,7 +176,7 @@ def process_text_to_carbon(input_text, username):
         clean_text = sentence.strip()
         analysis_results = None
         
-        # A. Try AI Service (FastAPI Microservice)
+        # A. AI Service call (logic remains same)
         try:
             ai_response = requests.post(
                 "http://ai_engine:8001/analyze", 
@@ -190,34 +189,31 @@ def process_text_to_carbon(input_text, username):
         except Exception as e:
             print(f"AI Service not reachable: {e}")
 
-        # B. Extraction & Fallback logic
         activity_type, key, quantity, unit = 'Unknown', None, 0, None
 
         if analysis_results and "error" not in analysis_results:
             activity_type = analysis_results.get('activity_type', 'Unknown')
             key = analysis_results.get('key')
-            
-            # Safeguard: If the AI failed to resolve a word like "two" into an int, force our parser to fix it
             raw_qty = analysis_results.get('quantity')
             if raw_qty is None or (isinstance(raw_qty, str) and not raw_qty.replace('.', '', 1).isdigit()):
                 quantity = extract_quantity(clean_text)
             else:
                 quantity = float(raw_qty)
-                
             unit = analysis_results.get('unit')
 
         if activity_type == 'Unknown' or not key:
             activity_type, key, quantity, unit = fallback_classify(clean_text)
 
-        # C. Calculation using SQLite Factors
         if activity_type == 'Unknown' or not key:
             failed_sentences.append(f"{clean_text} (Not Recognized)")
             continue
 
-        co2e = calculate_co2e(key, quantity, unit)
+        # --- CHANGE 1: Get 'is_verified' from calculator ---
+        # Pass the user_obj so the calculator can check their 'Pending' factors
+        co2e, is_verified = calculate_co2e(key, quantity, unit, request_user=user_obj)
         total_session_co2 += co2e
 
-        # D. Cloudant Persistence
+        # --- CHANGE 2: Save 'is_verified' to the log ---
         cloudant_doc = {
             "username": username,
             "input_text": clean_text,
@@ -226,6 +222,7 @@ def process_text_to_carbon(input_text, username):
             "quantity": quantity,
             "unit": unit,
             "co2e": co2e,
+            "is_verified": is_verified, # Added this
             "timestamp": current_time, 
             "date_readable": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(current_time)),
             "source_group_id": f"batch_{current_time}"
@@ -249,17 +246,15 @@ def process_text_to_carbon(input_text, username):
         "message": f"Processed: {len(logged_activities)} activities recorded."
     }, status=status.HTTP_201_CREATED)
 
-
 # --- 1. LOG ACTIVITY (TEXT) ---
 @api_view(['POST'])
-@permission_classes([AllowAny]) 
+@permission_classes([IsAuthenticated]) # Ensure this is IsAuthenticated, not AllowAny
 def log_activity_api(request):
     input_text = request.data.get('input_text')
-    username = request.data.get('username')
-    if not input_text or not username:
+    if not input_text:
         return Response({"message": "Missing input"}, status=status.HTTP_400_BAD_REQUEST)
-    return process_text_to_carbon(input_text, username)
-
+    # Pass request.user instead of just username string
+    return process_text_to_carbon(input_text, request.user)
 
 # --- 2. LOG ACTIVITY (AUDIO - DIRECT LOGGING) ---
 @api_view(['POST'])
@@ -290,7 +285,7 @@ def log_activity_audio_api(request):
             return Response({"message": "No speech detected in audio."}, status=status.HTTP_400_BAD_REQUEST)
 
         print(f"LOG: Transcription successful: '{transcript}'")
-        return process_text_to_carbon(transcript, username)
+        return process_text_to_carbon(transcript, request.user)
 
     except Exception as e:
         print(f"STT API Error: {e}")
@@ -380,3 +375,16 @@ def speech_to_text_api(request):
         return Response({"status": "success", "transcript": transcript.strip()})
     except Exception as e:
         return Response({"message": f"Transcription failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def add_custom_factor(request):
+    serializer = EmissionFactorSerializer(data=request.data)
+    if serializer.is_valid():
+        # Set status to pending and link to the current user
+        serializer.save(
+            status='pending',
+            added_by=request.user
+        )
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

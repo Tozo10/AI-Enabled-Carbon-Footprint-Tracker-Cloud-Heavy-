@@ -9,3 +9,4 @@ ibmcloudant==0.5.0
 ibm-cloud-sdk-core>=3.0.0
 ibm-watson
 nltk>=3.8.1
+djangorestframework-simplejwt
