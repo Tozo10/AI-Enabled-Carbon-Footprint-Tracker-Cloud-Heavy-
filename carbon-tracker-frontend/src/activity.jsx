@@ -1,12 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
-
-
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faMicrophone  } from '@fortawesome/free-solid-svg-icons';
-// import { byPrefixAndName } from '@awesome.me/kit-KIT_CODE/icons'
-import { faCompactDisc } from '@fortawesome/free-solid-svg-icons';
-
+import { faMicrophone, faCompactDisc, faPlusCircle } from '@fortawesome/free-solid-svg-icons';
 
 function Activity() {
   const [activityText, setActivityText] = useState("");
@@ -20,23 +15,44 @@ function Activity() {
   const audioChunksRef = useRef([]);
   const navigate = useNavigate();
 
+  // --- CROWDSOURCING STATES ---
+  const [showModal, setShowModal] = useState(false);
+  const [customFactor, setCustomFactor] = useState({
+    activity_type: 'TRANSPORT',
+    key: '',
+    co2e_per_unit: '',
+    unit: 'km',
+    source_reference: ''
+  });
+
   useEffect(() => {
-    // 1. Check if user is logged in
     const storedUser = localStorage.getItem("username");
-    if (!storedUser) {
+    const token = localStorage.getItem("access_token");
+    
+    if (!storedUser || !token) {
       alert("You must log in first!");
-      navigate("/"); 
+      navigate("/");
     } else {
       setUsername(storedUser);
     }
   }, [navigate]);
 
   /**
-   * STEP 2: CALCULATE CARBON
-   * This sends the text from the box to the backend for analysis.
+   * API CALL: LOG ACTIVITY
    */
   const handleLogActivity = async () => {
     if (!activityText) return;
+
+    const token = localStorage.getItem("access_token");
+ 
+  
+  // ADD THIS CHECK
+  if (!token) {
+    alert("Your session has expired. Please log in again.");
+    navigate("/");
+    return;
+  }
+
 
     setLoading(true);
     setResult(null);
@@ -46,20 +62,13 @@ function Activity() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`, // Crucial for your new JWT settings
         },
         body: JSON.stringify({
-          username: username,
+          username: username, // Cloudant depends on this
           input_text: activityText,
         }),
       });
-
-      // Handle non-JSON responses gracefully (prevents Unexpected token '<' errors)
-      const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
-        const text = await response.text();
-        console.error("Expected JSON but got:", text);
-        throw new Error(`Server returned an error page (Status: ${response.status}). Ensure the backend is running and URLs are correct.`);
-      }
 
       const data = await response.json();
 
@@ -67,29 +76,55 @@ function Activity() {
         setResult(data);
         setActivityText("");
       } else {
-        alert("Error: " + (data.message || "Unknown error"));
+        // If the token is expired, redirect to login
+        if (response.status === 401 || response.status === 403) {
+            alert("Session expired. Please log in again.");
+            navigate("/");
+        } else {
+            alert("Error: " + (data.message || "Unknown error"));
+        }
       }
     } catch (error) {
       console.error("Error logging activity:", error);
-      alert(error.message || "Could not connect to server.");
+      alert("Could not connect to server.");
     } finally {
       setLoading(false);
     }
   };
 
   /**
-   * KEYBOARD HANDLER
-   * Allows submitting by pressing Enter (without Shift)
+   * API CALL: SUBMIT CUSTOM FACTOR
    */
-  const handleKeyDown = (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault(); 
-      handleLogActivity();
+  const handleCustomFactorSubmit = async (e) => {
+    e.preventDefault();
+    const token = localStorage.getItem("access_token");
+
+    try {
+      const response = await fetch("http://localhost:8000/api/add-custom-factor/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify(customFactor)
+      });
+
+      if (response.ok) {
+        alert("Factor suggested successfully! It will appear as 'Pending' in your logs.");
+        setShowModal(false);
+        setCustomFactor({ activity_type: 'TRANSPORT', key: '', co2e_per_unit: '', unit: 'km', source_reference: '' });
+      } else {
+        const errorData = await response.json();
+        alert("Error: " + JSON.stringify(errorData));
+      }
+    } catch (err) {
+      console.error("Submission failed:", err);
     }
   };
 
-  // --- AUDIO RECORDING LOGIC ---
-
+  /**
+   * AUDIO RECORDING & TRANSCRIPTION
+   */
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -103,21 +138,15 @@ function Activity() {
 
       mediaRecorder.onstop = () => {
         const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        const url = URL.createObjectURL(blob);
-        setAudioUrl(url);
-        
-        // Cleanup microphone tracks
+        setAudioUrl(URL.createObjectURL(blob));
         stream.getTracks().forEach((t) => t.stop());
-        
-        // Start Step 1: Transcription
         transcribeAudio(blob);
       };
 
       mediaRecorder.start();
       setIsRecording(true);
     } catch (err) {
-      console.error("Microphone error:", err);
-      alert("Could not access microphone. Please ensure permissions are granted in your browser settings.");
+      alert("Microphone error. Please check permissions.");
     }
   };
 
@@ -125,52 +154,33 @@ function Activity() {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
-      mediaRecorderRef.current = null;
     }
   };
 
-  /**
-   * STEP 1: TRANSCRIBE SPEECH
-   * Converts audio to text and puts it in the textarea.
-   */
   const transcribeAudio = async (blob) => {
     setIsTranscribing(true);
-
     try {
       const formData = new FormData();
       formData.append('audio', blob, 'recording.webm');
-
-      // Ensure this URL exactly matches your urls.py (including the trailing slash)
       const response = await fetch('http://localhost:8000/api/speech-to-text/', {
         method: 'POST',
         body: formData,
       });
-
-      // Robust check for JSON content type
-      const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
-        const htmlError = await response.text();
-        console.error("Backend returned HTML instead of JSON:", htmlError);
-        
-        // Custom message for 404s
-        if (response.status === 404) {
-          throw new Error("Endpoint /api/speech-to-text/ not found (404). Please rebuild your Docker backend.");
-        }
-        throw new Error(`Server Error (${response.status}). Check backend terminal logs.`);
-      }
-
       const data = await response.json();
-
       if (response.ok && data.transcript) {
         setActivityText(data.transcript);
-      } else {
-        alert('Transcription failed: ' + (data.message || 'No speech detected.'));
       }
     } catch (error) {
       console.error('Transcription error:', error);
-      alert(`Speech Service Error: ${error.message}`);
     } finally {
       setIsTranscribing(false);
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleLogActivity();
     }
   };
 
@@ -180,9 +190,7 @@ function Activity() {
         Carbon Activity Logger
       </h1>
 
-      <div className="w-full max-w-2xl bg-gray-800 p-8 rounded-2xl shadow-2xl border border-gray-700">
-        
-        {/* TEXT AREA INPUT */}
+      <div className="w-full max-w-2xl bg-gray-800 p-8 rounded-2xl shadow-2xl border border-gray-700 relative">
         <label className="block text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
           What did you do today?
         </label>
@@ -191,50 +199,34 @@ function Activity() {
           onChange={(e) => setActivityText(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Example: I drove 15km in a small car. I ate a beef burger."
-          className="w-full px-5 py-4 rounded-xl border border-gray-600 bg-gray-900 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 transition-all resize-none text-lg"
+          className="w-full px-5 py-4 rounded-xl border border-gray-600 bg-gray-900 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 transition-all resize-none text-lg"
           rows={4}
         />
+        
         <div className="flex justify-between mt-2">
-            <span className="text-xs text-gray-500 italic">Pro-tip: Press Enter to calculate immediately.</span>
-            {isTranscribing && (
-                <span className="text-xs text-cyan-400 animate-pulse font-bold">Processing your voice...</span>
-            )}
+          <span className="text-xs text-gray-500 italic">Pro-tip: Press Enter to calculate.</span>
+          {isTranscribing && <span className="text-xs text-cyan-400 animate-pulse font-bold">Processing voice...</span>}
         </div>
 
         {/* VOICE CONTROLS */}
         <div className="mt-8 flex items-center justify-center space-x-6 border-t border-gray-700 pt-8">
           {!isRecording ? (
-            <button
-              onClick={startRecording}
-              className="group flex flex-col items-center space-y-2 focus:outline-none"
-            >
+            <button onClick={startRecording} className="group flex flex-col items-center space-y-2 focus:outline-none">
               <div className="w-16 h-16 bg-cyan-600 rounded-full flex items-center justify-center group-hover:bg-cyan-500 transition-colors shadow-lg">
-  <FontAwesomeIcon icon={faMicrophone} className="text-2xl text-white" />
-</div>
-
-              <span className="text-xs font-bold text-cyan-400 group-hover:text-cyan-300">START VOICE</span>
+                <FontAwesomeIcon icon={faMicrophone} className="text-2xl text-white" />
+              </div>
+              <span className="text-xs font-bold text-cyan-400 uppercase">Start Voice</span>
             </button>
           ) : (
-            <button
-              onClick={stopRecording}
-              className="group flex flex-col items-center space-y-2 focus:outline-none"
-            >
+            <button onClick={stopRecording} className="group flex flex-col items-center space-y-2 focus:outline-none">
               <div className="w-16 h-16 bg-red-600 rounded-full flex items-center justify-center animate-pulse shadow-lg">
-                <span className="text-2xl"><FontAwesomeIcon icon={faCompactDisc} />
-</span>
+                <FontAwesomeIcon icon={faCompactDisc} className="text-2xl text-white" />
               </div>
-              <span className="text-xs font-bold text-red-400">STOP & CONVERT</span>
+              <span className="text-xs font-bold text-red-400 uppercase">Stop & Convert</span>
             </button>
-          )}
-          
-          {audioUrl && !isRecording && (
-            <div className="hidden md:block">
-               <audio src={audioUrl} controls className="h-8 opacity-50 hover:opacity-100 transition-opacity" />
-            </div>
           )}
         </div>
 
-        {/* CALCULATION BUTTON */}
         <button
           onClick={handleLogActivity}
           disabled={loading || isTranscribing || !activityText}
@@ -246,50 +238,98 @@ function Activity() {
         >
           {loading ? "Analyzing Data..." : "Calculate Carbon Footprint"}
         </button>
+
+        {/* CROWDSOURCING LINK */}
+        <div className="mt-6 text-center">
+            <button 
+              onClick={() => setShowModal(true)}
+              className="text-xs text-gray-400 hover:text-cyan-400 transition-colors uppercase tracking-widest font-bold flex items-center justify-center mx-auto gap-2"
+            >
+              <FontAwesomeIcon icon={faPlusCircle} />
+              Missing a factor? Suggest one here
+            </button>
+        </div>
       </div>
 
       {/* RESULTS DISPLAY */}
       {result && (
         <div className="mt-10 w-full max-w-2xl animate-in fade-in slide-in-from-bottom-4 duration-500">
           <div className="bg-gray-800 p-8 rounded-2xl border-l-8 border-green-500 shadow-2xl">
-            <div className="flex justify-between items-start mb-4">
-               <h3 className="text-2xl font-bold text-white">Impact Summary</h3>
-               <span className="px-3 py-1 bg-green-900 text-green-300 text-xs font-bold rounded-full">LOGGED</span>
-            </div>
-            
+            <h3 className="text-2xl font-bold text-white mb-4">Impact Summary</h3>
             <div className="flex flex-col items-center py-4">
-              <span className="text-6xl font-black text-green-400">
-                {result.total_co2e_kg}
-              </span>
+              <span className="text-6xl font-black text-green-400">{result.total_co2e_kg}</span>
               <span className="text-xl font-medium text-gray-400 mt-2">kg CO₂e Total Impact</span>
             </div>
-
-            {result.activities && result.activities.length > 0 && (
-              <div className="mt-6 space-y-3">
-                <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest border-b border-gray-700 pb-2">Details</h4>
-                {result.activities.map((act, idx) => (
-                  <div key={idx} className="flex justify-between text-sm">
-                    <span className="text-gray-300 capitalize">{act.activity_type}: {act.key}</span>
-                    <span className="text-green-500 font-mono font-bold">+{act.co2e} kg</span>
-                  </div>
-                ))}
+            {result.activities?.map((act, idx) => (
+              <div key={idx} className="flex justify-between text-sm mt-3 border-t border-gray-700 pt-2">
+                <span className="text-gray-300 capitalize">{act.activity_type}: {act.key}</span>
+                <span className="text-green-500 font-mono font-bold">+{act.co2e} kg</span>
               </div>
-            )}
+            ))}
           </div>
         </div>
       )}
 
+      {/* FOOTER */}
       <div className="mt-12 flex space-x-6 text-sm">
-        <Link to="/dashboard" className="text-gray-500 hover:text-white transition-colors underline decoration-gray-700">
-          Back to Dashboard
-        </Link>
-        <button 
-          onClick={() => {setResult(null); setActivityText("");}} 
-          className="text-gray-500 hover:text-red-400 transition-colors"
-        >
-          Clear All
-        </button>
+        <Link to="/dashboard" className="text-gray-500 hover:text-white underline">Back to Dashboard</Link>
+        <button onClick={() => {setResult(null); setActivityText("");}} className="text-gray-500 hover:text-red-400">Clear All</button>
       </div>
+
+      {/* CROWDSOURCING MODAL */}
+      {showModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center p-4 z-50 backdrop-blur-sm">
+          <div className="bg-gray-800 rounded-2xl p-8 max-w-md w-full border border-gray-700 shadow-2xl">
+            <h2 className="text-2xl font-bold mb-6 text-green-400">Suggest New Factor</h2>
+            <form onSubmit={handleCustomFactorSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Category</label>
+                <select 
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-green-500"
+                  value={customFactor.activity_type}
+                  onChange={(e) => setCustomFactor({...customFactor, activity_type: e.target.value})}
+                >
+                  <option value="TRANSPORT">Transport</option>
+                  <option value="FOOD">Food</option>
+                  <option value="ENERGY">Energy/Utilities</option>
+                </select>
+              </div>
+              <input 
+                type="text" placeholder="Activity Name (e.g. Electric_Rickshaw)"
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-green-500"
+                required value={customFactor.key}
+                onChange={(e) => setCustomFactor({...customFactor, key: e.target.value})}
+              />
+              <div className="flex gap-2">
+                <input 
+                  type="number" step="0.0001" placeholder="CO2 Value"
+                  className="flex-1 bg-gray-900 border border-gray-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-green-500"
+                  required value={customFactor.co2e_per_unit}
+                  onChange={(e) => setCustomFactor({...customFactor, co2e_per_unit: e.target.value})}
+                />
+                <input 
+                  type="text" placeholder="Unit"
+                  className="w-24 bg-gray-900 border border-gray-700 rounded-lg p-3 text-white"
+                  required value={customFactor.unit}
+                  onChange={(e) => setCustomFactor({...customFactor, unit: e.target.value})}
+                />
+              </div>
+              <textarea 
+                placeholder="Source Link or Reference"
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white h-24 focus:ring-2 focus:ring-green-500"
+                value={customFactor.source_reference}
+                onChange={(e) => setCustomFactor({...customFactor, source_reference: e.target.value})}
+              />
+              <div className="flex justify-end gap-3 mt-8">
+                <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 text-gray-400 hover:text-white">Cancel</button>
+                <button type="submit" className="bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-6 rounded-lg">
+                  Submit for Review
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

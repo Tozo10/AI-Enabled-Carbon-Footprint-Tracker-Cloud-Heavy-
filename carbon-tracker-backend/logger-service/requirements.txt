@@ -11,3 +11,4 @@ ibm-watson
 nltk>=3.8.1
 thefuzz==0.22.1
 python-Levenshtein==0.25.0
+djangorestframework-simplejwt
