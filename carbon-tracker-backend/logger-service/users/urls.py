@@ -14,7 +14,7 @@ urlpatterns = [
     path('api/my-activities/', views.get_user_activities_api, name='get_user_activities_api'),
     path('api/speech-to-text/', views.speech_to_text_api, name='stt'),
     path('api/leaderboard/', views.get_leaderboard_api, name='leaderboard_api'),
-    path('add-custom-factor/', views.add_custom_factor, name='add_custom_factor'),
+      path('api/add-custom-factor/', views.add_custom_factor, name='add_custom_factor'),
     
 
 

@@ -75,11 +75,11 @@ def extract_quantity(text):
     return 1.0
 
 
-# --- HELPER: DYNAMIC FALLBACK CLASSIFIER (UPGRADED WITH FUZZY MATCHING) ---
+# --- HELPER: DYNAMIC FALLBACK CLASSIFIER (UPGRADED WITH SMART FUZZY MATCHING) ---
 def fallback_classify(text):
     """
     Acts as a safety net if the AI Service is down or fails to extract data.
-    Now uses thefuzz to handle typos with an 80% accuracy threshold.
+    Now uses thefuzz to handle typos and safely split complex DB keys (e.g., 'Paneer_Indian').
     """
     text_lower = text.lower()
     
@@ -124,18 +124,27 @@ def fallback_classify(text):
     best_score = 0
     
     for db_key in known_keys:
-        # 1. Exact match check (fastest, catches perfect spelling immediately)
-        if db_key in text_lower:
+        # Convert "Paneer_Indian" to "paneer indian" for safer matching
+        clean_db_key = db_key.lower().replace('_', ' ')
+        
+        # 1. Exact phrase match (e.g., if user somehow types "paneer indian")
+        if clean_db_key in text_lower:
             found_key = db_key
             best_score = 100
             break
             
-        # 2. Fuzzy match check (catches typos like 'buger' against 'burger')
+        # 2. Smart Fuzzy match (Checks input words against parts of the DB key)
+        # This splits "paneer indian" into ['paneer', 'indian']
+        key_parts = clean_db_key.split() 
         for word in words:
-            score = fuzz.ratio(word, db_key)
-            if score > best_score:
-                best_score = score
-                found_key = db_key
+            for part in key_parts:
+                # Skip tiny words to avoid false positive matches
+                if len(part) <= 2: continue 
+                
+                score = fuzz.ratio(word, part)
+                if score > best_score:
+                    best_score = score
+                    found_key = db_key
                 
     # Enforce the 80% confidence threshold
     if best_score < 80:
@@ -194,11 +203,25 @@ def process_text_to_carbon(input_text, user_obj): # Changed 'username' to 'user_
         if analysis_results and "error" not in analysis_results:
             activity_type = analysis_results.get('activity_type', 'Unknown')
             key = analysis_results.get('key')
+            
             raw_qty = analysis_results.get('quantity')
-            if raw_qty is None or (isinstance(raw_qty, str) and not raw_qty.replace('.', '', 1).isdigit()):
-                quantity = extract_quantity(clean_text)
+            
+            # --- UPDATED QUANTITY FIX ---
+            # Safely check if AI returned a valid number greater than 0
+            is_valid_qty = False
+            try:
+                if raw_qty is not None and float(raw_qty) > 0:
+                    is_valid_qty = True
+            except (ValueError, TypeError):
+                pass
+                
+            if not is_valid_qty:
+                # Forces our perfect number parser to step in if AI fails or returns 0
+                quantity = extract_quantity(clean_text) 
             else:
                 quantity = float(raw_qty)
+            # ---------------------------
+                
             unit = analysis_results.get('unit')
 
         if activity_type == 'Unknown' or not key:
@@ -230,7 +253,7 @@ def process_text_to_carbon(input_text, user_obj): # Changed 'username' to 'user_
         
         try:
             save_activity_log(cloudant_doc)
-            cloudant_doc['_id'] = f"temp_{int(time.time())}_{len(logged_activities)}" 
+            cloudant_doc['id'] = f"temp{int(time.time())}_{len(logged_activities)}" 
             logged_activities.append(cloudant_doc)
         except Exception as e:
             print(f"Cloudant Save Fail: {e}")
