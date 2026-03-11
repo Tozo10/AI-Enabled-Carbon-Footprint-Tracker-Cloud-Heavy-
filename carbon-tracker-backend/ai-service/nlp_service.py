@@ -21,7 +21,7 @@ def analyze_activity_text(text_to_analyze):
         model_id = "ibm/granite-3-3-8b-instruct"
 
         parameters = {
-            GenParams.MAX_NEW_TOKENS: 100,
+            GenParams.MAX_NEW_TOKENS: 250,
             GenParams.TEMPERATURE: 0.1, 
             GenParams.REPETITION_PENALTY: 1.0
         }
@@ -29,20 +29,28 @@ def analyze_activity_text(text_to_analyze):
         # --- PROMPT: USING THE [INST] FORMAT THAT WORKED ---
         # We give it clear examples for Transport, Food, and Energy
         prompt_template = """[INST]
-You are a Carbon Footprint Extractor. extract 'activity_type', 'key', 'quantity', and 'unit'.
+You are a Carbon Footprint Extractor. Extract one or more activities from the input.
 - activity_type: "TRANSPORT", "FOOD", or "ENERGY".
 - key: "car", "beef", "burger", "electricity", etc.
 - quantity: number.
 - unit: "km", "serving", "kWh".
+- Return valid JSON only.
+- Always return an object with an "extracted" array.
+- Each activity must be a separate object inside "extracted".
+- Do not merge quantities or units across different activities.
+- If quantity is implied by "a" or "an", use 1.
 
 Input: "I took a 25 mile cab ride"
-Output: {{ "activity_type": "TRANSPORT", "key": "car", "quantity": 25, "unit": "miles" }}
+Output: {{ "extracted": [{{ "activity_type": "TRANSPORT", "key": "car", "quantity": 25, "unit": "miles" }}] }}
 
 Input: "I ate 2 burgers"
-Output: {{ "activity_type": "FOOD", "key": "beef", "quantity": 2, "unit": "serving" }}
+Output: {{ "extracted": [{{ "activity_type": "FOOD", "key": "beef", "quantity": 2, "unit": "serving" }}] }}
 
 Input: "I used 50 kWh of electricity"
-Output: {{ "activity_type": "ENERGY", "key": "electricity", "quantity": 50, "unit": "kWh" }}
+Output: {{ "extracted": [{{ "activity_type": "ENERGY", "key": "electricity", "quantity": 50, "unit": "kWh" }}] }}
+
+Input: "I ate an apple and bought 10 kg lpg"
+Output: {{ "extracted": [{{ "activity_type": "FOOD", "key": "apple", "quantity": 1, "unit": "piece" }}, {{ "activity_type": "ENERGY", "key": "lpg", "quantity": 10, "unit": "kg" }}] }}
 
 Input: "{}"
 Output:
@@ -65,12 +73,21 @@ Output:
         # 1. Remove Markdown code blocks if present
         clean_text = raw_response_text.replace("```json", "").replace("```", "").strip()
         
-        # 2. Extract JSON using Regex (Finds { ... })
+        # 2. Extract JSON payload (prefer object with "extracted", fall back to array/object)
         json_match = re.search(r"\{.*\}", clean_text, re.DOTALL)
+        array_match = re.search(r"\[.*\]", clean_text, re.DOTALL)
         
         if json_match:
             json_string = json_match.group(0)
-            return json.loads(json_string)
+            parsed = json.loads(json_string)
+            if isinstance(parsed, dict) and "extracted" in parsed:
+                return parsed
+            if isinstance(parsed, dict):
+                return {"extracted": [parsed]}
+        elif array_match:
+            parsed = json.loads(array_match.group(0))
+            if isinstance(parsed, list):
+                return {"extracted": parsed}
         else:
             print("DEBUG: Could not find JSON in response.")
             return None

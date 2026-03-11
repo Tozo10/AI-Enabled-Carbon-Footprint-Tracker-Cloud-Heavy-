@@ -13,9 +13,9 @@ class Command(BaseCommand):
             
             # --- TRANSPORT (India Specific) ---
             {'key': 'Auto_Rickshaw_CNG', 'at': 'Transport', 'val': 0.08, 'unit': 'km', 'src': 'BEE'},
-            {'key': 'Two_Wheeler_Petrol_100cc', 'at': 'Transport', 'val': 0.045, 'unit': 'km', 'src': 'MoRTH'},
+            {'key': 'Bike_100cc', 'at': 'Transport', 'val': 0.045, 'unit': 'km', 'src': 'MoRTH'},
             {'key': 'Bus_City_NonAC_India', 'at': 'Transport', 'val': 0.05, 'unit': 'km', 'src': 'DTC/BEST'},
-            {'key': 'Indian_Railways_Sleeper', 'at': 'Public Transport', 'val': 0.02, 'unit': 'km', 'src': 'IR'},
+            {'key': 'Indian_Railways_Sleeper_Train', 'at': 'Public Transport', 'val': 0.02, 'unit': 'km', 'src': 'IR'},
             
             # --- FOOD (Indian Diet Staples) ---
             {'key': 'Rice_White_India', 'at': 'Food', 'val': 3.55, 'unit': 'kg', 'src': 'LCA India'},
