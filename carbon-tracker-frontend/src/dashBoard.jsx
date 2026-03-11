@@ -113,7 +113,7 @@ function Dashboard() {
         {showLeaderboard && (
           <div className="w-1/3 bg-gray-800 shadow-lg p-6 border-l-4 border-blue-500 overflow-y-auto animate-fadeSlide">
             <h2 className="text-2xl font-bold mb-4" style={{ color: "#037880" }}>
-              🌍 Top Climate Champions
+              🌍 Top Carbon Emitters
             </h2>
             <p className="text-gray-400 mb-6 text-sm">
               Real-time leaders based on total recorded carbon activities.

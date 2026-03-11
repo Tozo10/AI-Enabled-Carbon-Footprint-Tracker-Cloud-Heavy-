@@ -10,7 +10,9 @@ function ActivitiesList() {
 
   useEffect(() => {
     const username = localStorage.getItem("username");
-    if (!username) {
+    const token = localStorage.getItem("access_token"); // ✅ FIX: get the JWT token
+
+    if (!username || !token) {
       navigate("/"); // Protect the route
       return;
     }
@@ -18,11 +20,27 @@ function ActivitiesList() {
     // Fetch data from backend
     const fetchActivities = async () => {
       try {
-        const response = await fetch(`http://localhost:8000/api/my-activities/?username=${username}`);
+        const response = await fetch(`http://localhost:8000/api/my-activities/`, {
+          method: "GET",
+          headers: {
+            "Authorization": `Bearer ${token}`, // ✅ FIX: send token in header
+            "Content-Type": "application/json",
+          },
+        });
+
+        // ✅ FIX: handle token expiry gracefully
+        if (response.status === 401 || response.status === 403) {
+          alert("Session expired. Please log in again.");
+          localStorage.removeItem("access_token");
+          localStorage.removeItem("username");
+          navigate("/");
+          return;
+        }
+
         const data = await response.json();
 
         if (response.ok) {
-          setActivities(data.activities);
+          setActivities(data.activities || []); // ✅ FIX: fallback to empty array
         } else {
           console.error("Failed to fetch:", data.message);
         }
@@ -58,7 +76,7 @@ function ActivitiesList() {
            <table className="w-full text-left">
   <thead className="bg-gray-700 text-gray-300">
     <tr>
-      <th className="p-4 text-center">Status</th> {/* New Status Column */}
+      <th className="p-4 text-center">Status</th>
       <th className="p-4">Input</th>
       <th className="p-4">Type</th>
       <th className="p-4">Quantity</th>

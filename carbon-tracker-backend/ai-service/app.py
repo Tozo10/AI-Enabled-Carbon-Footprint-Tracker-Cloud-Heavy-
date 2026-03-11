@@ -7,7 +7,7 @@ app = Flask(__name__)
 @app.route('/analyze', methods=['POST'])
 def analyze():
     data = request.json
-    text = data.get('text', '')
+    text = (data.get('text') or data.get('input_text') or '').strip()
     
     print(f"DEBUG: AI Service received text: {text}")
     
@@ -16,6 +16,12 @@ def analyze():
 
     try:
         result = analyze_activity_text(text)
+        if result is None:
+            result = {"extracted": []}
+        elif isinstance(result, list):
+            result = {"extracted": result}
+        elif isinstance(result, dict) and "extracted" not in result:
+            result = {"extracted": [result]}
         return jsonify(result)
     except Exception as e:
         print(f"AI Service Error: {e}")
