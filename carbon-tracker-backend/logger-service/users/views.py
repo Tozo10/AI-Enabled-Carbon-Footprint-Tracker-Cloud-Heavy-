@@ -5,7 +5,7 @@ import requests
 import re
 import traceback
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated, BasePermission
 from rest_framework.response import Response
 from rest_framework import status
 from decouple import config
@@ -31,6 +31,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("logger_service")
 AI_SERVICE_URL = config("AI_SERVICE_URL", default="http://ai_engine:5000/analyze")
+
+
+class IsAuthenticatedOrOptions(BasePermission):
+    def has_permission(self, request, view):
+        if request.method == "OPTIONS":
+            return True
+        return bool(request.user and request.user.is_authenticated)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  NLTK SETUP
@@ -177,6 +184,7 @@ ACTION_VERBS = (
     'used', 'use', 'ate', 'eat', 'had', 'drink', 'drank', 'drunk',
     'drove', 'drive', 'took', 'take', 'travelled', 'traveled', 'travel',
     'rode', 'ride', 'flew', 'fly', 'walked', 'walk', 'cooked', 'cook',
+    'made', 'make',
     'burned', 'burnt', 'burn', 'charged', 'charge', 'consumed', 'consume',
     'wasted', 'waste', 'threw', 'throw', 'bought', 'buy', 'purchased',
     'purchase', 'ordered', 'order',
@@ -387,6 +395,8 @@ PIECE_TO_KG = {
 _DB_KEY_CACHE      = None
 _DB_KEY_CACHE_TIME = 0
 DB_KEY_CACHE_TTL   = 300   # seconds
+_USAGE_CACHE = {}
+USAGE_CACHE_TTL = 300
 
 
 def get_cached_emission_keys() -> list:
@@ -401,6 +411,153 @@ def get_cached_emission_keys() -> list:
             logger.warning("DB key cache refresh failed: %s", e)
             _DB_KEY_CACHE = []
     return _DB_KEY_CACHE
+
+
+AMBIGUITY_STOPWORDS = {
+    'i', 'a', 'an', 'the', 'and', 'or', 'to', 'for', 'of', 'in', 'on', 'with',
+    'my', 'your', 'our', 'their', 'his', 'her', 'this', 'that', 'these', 'those',
+    'used', 'use', 'ate', 'eat', 'had', 'have', 'took', 'take', 'travelled',
+    'traveled', 'travel', 'drove', 'drive', 'rode', 'ride', 'bought', 'buy',
+    'ordered', 'order', 'consumed', 'consume', 'km', 'mile', 'miles', 'kg',
+    'g', 'gram', 'grams', 'kwh', 'litre', 'liter', 'piece', 'pieces', 'serving',
+    'servings', 'unit', 'units', 'cc',
+}
+
+
+def normalize_factor_label(key: str) -> str:
+    label = (key or '').replace('_', ' ').strip()
+    label = re.sub(r'(?i)\bnonac\b', 'non ac', label)
+    label = re.sub(r'(?i)(\d+)\s*cc\b', r'\1cc', label)
+    return re.sub(r'\s+', ' ', label).strip()
+
+
+def normalize_matching_token(token: str) -> str:
+    token = (token or '').lower().strip()
+    if re.fullmatch(r'\d+cc|\d+\.\d+|\d+', token):
+        return token
+    if len(token) > 4 and token.endswith('ies'):
+        return token[:-3] + 'y'
+    if len(token) > 3 and token.endswith('s') and not token.endswith('ss'):
+        return token[:-1]
+    return token
+
+
+def tokenize_for_matching(text: str) -> list:
+    normalized = normalize_factor_label(text).lower()
+    raw_tokens = re.findall(r'[a-z]+|\d+cc|\d+\.\d+|\d+', normalized)
+    return [normalize_matching_token(token) for token in raw_tokens]
+
+
+def normalize_text_for_matching(text: str) -> str:
+    return " ".join(tokenize_for_matching(text))
+
+
+def get_usage_counts(keys: list) -> dict:
+    if not keys:
+        return {}
+
+    cache_key = tuple(sorted(keys))
+    cached = _USAGE_CACHE.get(cache_key)
+    now = time.time()
+    if cached and (now - cached["ts"]) <= USAGE_CACHE_TTL:
+        return cached["counts"]
+
+    counts = {key: 0 for key in keys}
+    try:
+        from .cloudant_db import get_cloudant_client
+        client = get_cloudant_client()
+        if client:
+            result = client.post_all_docs(db="activity-logs", include_docs=True).get_result()
+            for row in result.get("rows", []):
+                doc = row.get("doc") or {}
+                key = doc.get("key")
+                if key in counts:
+                    counts[key] += 1
+    except Exception as exc:
+        logger.debug("Usage count lookup failed: %s", exc)
+
+    _USAGE_CACHE[cache_key] = {"ts": now, "counts": counts}
+    return counts
+
+
+def build_ambiguity_options(candidates, usage_counts):
+    if not candidates:
+        return []
+
+    highest_usage = max((usage_counts.get(item.key, 0) for item in candidates), default=0)
+    options = []
+    for item in candidates:
+        usage_count = usage_counts.get(item.key, 0)
+        options.append({
+            "key": item.key,
+            "label": normalize_factor_label(item.key),
+            "unit": item.unit,
+            "activity_type": item.activity_type,
+            "usage_count": usage_count,
+            "is_most_used": usage_count == highest_usage and highest_usage > 0,
+        })
+    return sorted(options, key=lambda opt: (-opt["usage_count"], opt["label"].lower()))
+
+
+def resolve_ambiguous_factor(sentence: str, activity_type: str, inferred_key: str, clarification_key: str = None):
+    if not inferred_key or activity_type == 'Unknown':
+        return inferred_key, None
+
+    if clarification_key:
+        selected = EmissionFactor.objects.filter(
+            activity_type__iexact=activity_type,
+            key__iexact=clarification_key,
+        ).first()
+        if selected:
+            return selected.key, None
+
+    sentence_tokens = {
+        token for token in tokenize_for_matching(sentence)
+        if token not in AMBIGUITY_STOPWORDS and not token.isdigit()
+    }
+    key_tokens = {
+        token for token in tokenize_for_matching(inferred_key)
+        if token not in AMBIGUITY_STOPWORDS and not token.isdigit()
+    }
+    normalized_key_tokens = tokenize_for_matching(inferred_key)
+    generic_key_tokens = {normalized_key_tokens[0]} if normalized_key_tokens else set()
+    search_tokens = sentence_tokens or generic_key_tokens
+    if not search_tokens:
+        return inferred_key, None
+
+    candidates = []
+    for factor in EmissionFactor.objects.filter(activity_type__iexact=activity_type):
+        factor_tokens = set(tokenize_for_matching(factor.key))
+        overlap = (factor_tokens & search_tokens)
+        if overlap:
+            candidates.append((factor, factor_tokens, len(overlap)))
+
+    if len(candidates) <= 1:
+        return inferred_key, None
+
+    candidates.sort(key=lambda item: (-item[2], normalize_factor_label(item[0].key).lower()))
+    top_overlap = candidates[0][2]
+    top_candidates = [item for item in candidates if item[2] == top_overlap]
+
+    descriptor_matches = []
+    for factor, factor_tokens, _ in top_candidates:
+        descriptor_tokens = factor_tokens - generic_key_tokens
+        explicit_descriptors = descriptor_tokens & sentence_tokens
+        descriptor_matches.append((factor, explicit_descriptors))
+
+    strong_matches = [item for item in descriptor_matches if item[1]]
+    if len(strong_matches) == 1:
+        return strong_matches[0][0].key, None
+
+    ambiguous_factors = [item[0] for item in top_candidates]
+    usage_counts = get_usage_counts([factor.key for factor in ambiguous_factors])
+    return inferred_key, {
+        "sentence": sentence,
+        "activity_type": activity_type,
+        "inferred_key": inferred_key,
+        "message": f"Multiple matches found for '{sentence}'. Please choose one.",
+        "options": build_ambiguity_options(ambiguous_factors, usage_counts),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -569,9 +726,14 @@ def remap_ai_key(ai_key: str, ai_category: str) -> tuple:
     """
     if not ai_key:
         return ai_key, ai_category, 'unit'
-    key_lower = ai_key.lower().strip()
+    key_lower = normalize_text_for_matching(ai_key)
     for trigger in sorted(SPECIFIC_KEY_MAP.keys(), key=len, reverse=True):
-        if trigger in key_lower or key_lower == trigger or trigger == key_lower.split('_')[0]:
+        trigger_normalized = normalize_text_for_matching(trigger)
+        if (
+            trigger_normalized in key_lower
+            or key_lower == trigger_normalized
+            or (key_lower.split() and trigger_normalized == normalize_matching_token(key_lower.split()[0]))
+        ):
             cat, db_key, nat_unit = SPECIFIC_KEY_MAP[trigger]
             logger.debug("AI key remapped: '%s' → '%s' (%s)", ai_key, db_key, cat)
             return db_key, cat, nat_unit
@@ -592,13 +754,15 @@ def fallback_classify(text: str) -> tuple:
     """
     text_translated = apply_hinglish_translation(text)
     text_lower      = text_translated.lower()
-    words           = re.findall(r'\b[a-z]+\b', text_lower)
+    normalized_text = normalize_text_for_matching(text_lower)
+    words           = tokenize_for_matching(text_lower)
     quantity, qty_inferred = extract_quantity(text_lower)
     detected_unit   = detect_unit_from_text(text_lower)
 
     # ── STEP 1: SPECIFIC_KEY_MAP ─────────────────────────────────────────────
     for trigger in sorted(SPECIFIC_KEY_MAP.keys(), key=len, reverse=True):
-        if re.search(r'\b' + re.escape(trigger) + r'\b', text_lower):
+        trigger_normalized = normalize_text_for_matching(trigger)
+        if re.search(r'\b' + re.escape(trigger_normalized) + r'\b', normalized_text):
             category, db_key, natural_unit = SPECIFIC_KEY_MAP[trigger]
             unit = detected_unit if detected_unit else natural_unit
             logger.debug("SPECIFIC_KEY_MAP: trigger='%s' → %s / %s / %s",
@@ -625,8 +789,8 @@ def fallback_classify(text: str) -> tuple:
     # ── STEP 3: DB fuzzy key search (cached) ────────────────────────────────
     found_key, best_score = None, 0
     for db_key in get_cached_emission_keys():
-        clean = db_key.lower().replace('_', ' ')
-        if clean in text_lower:
+        clean = normalize_text_for_matching(db_key)
+        if clean in normalized_text:
             found_key = db_key
             break
         for word in words:
@@ -661,7 +825,7 @@ def normalize_input_text(raw: str) -> str:
     text = re.sub(r'\band\s+i\b', '. I', text, flags=re.IGNORECASE)
     text = re.sub(
         r'\band\s+(used|use|ate|eat|had|drink|drank|drunk|drove|drive|took|take|'
-        r'travelled|traveled|travel|rode|ride|flew|fly|walked|walk|cooked|cook|'
+        r'travelled|traveled|travel|rode|ride|flew|fly|walked|walk|cooked|cook|made|make|'
         r'burned|burnt|burn|charged|charge|consumed|consume|wasted|waste|threw|throw|'
         r'bought|buy|purchased|purchase|ordered|order)\b',
         r'. \1', text, flags=re.IGNORECASE
@@ -696,15 +860,21 @@ def split_activity_clauses(text: str):
             flags=re.IGNORECASE,
         )
         for part in parts:
-            subparts = re.split(
-                r'\s+(?:and|or)\s+(?=(?:\d+(?:\.\d+)?|\.\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten)\b)',
+            infinitive_parts = re.split(
+                r'\s+to\s+(?=(?:' + verb_pattern + r')\b)',
                 part,
                 flags=re.IGNORECASE,
             )
-            for subpart in subparts:
-                clean = subpart.strip(" .")
-                if len(clean) > 2:
-                    clauses.append(clean)
+            for infinitive_part in infinitive_parts:
+                subparts = re.split(
+                    r'\s+(?:and|or)\s+(?=(?:\d+(?:\.\d+)?|\.\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten)\b)',
+                    infinitive_part,
+                    flags=re.IGNORECASE,
+                )
+                for subpart in subparts:
+                    clean = subpart.strip(" .")
+                    if len(clean) > 2:
+                        clauses.append(clean)
 
     return clauses
 
@@ -712,30 +882,30 @@ def split_activity_clauses(text: str):
 # ─────────────────────────────────────────────────────────────────────────────
 #  CORE PROCESSING ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
-def process_text_to_carbon(input_text: str, user_obj):
-    username         = user_obj.username
-    normalized_text  = normalize_input_text(input_text)
-    sentences        = split_activity_clauses(normalized_text)
+def process_text_to_carbon(input_text: str, user_obj, clarifications=None):
+    username = user_obj.username
+    normalized_text = normalize_input_text(input_text)
+    sentences = split_activity_clauses(normalized_text)
     logger.info("Processing %d activity clause(s) for user '%s'", len(sentences), username)
 
-    logged_activities = []
-    failed_sentences  = []
-    global_warnings   = []
-    total_co2         = 0.0
-    batch_id          = f"batch_{int(time.time())}"
+    clarifications = clarifications or {}
+    pending_activities = []
+    failed_sentences = []
+    global_warnings = []
+    total_co2 = 0.0
+    batch_id = f"batch_{int(time.time())}"
 
-    for sentence in sentences:
+    for index, sentence in enumerate(sentences):
         clean_text = sentence.strip()
         logger.debug("Processing: '%s'", clean_text)
 
-        activity_type  = 'Unknown'
-        key            = None
-        quantity       = 0.0
-        unit           = None
-        qty_inferred   = False
+        activity_type = 'Unknown'
+        key = None
+        quantity = 0.0
+        unit = None
+        qty_inferred = False
         analysis_results = None
 
-        # ── A. Try AI Service ────────────────────────────────────────────────
         try:
             ai_resp = requests.post(
                 AI_SERVICE_URL,
@@ -751,12 +921,9 @@ def process_text_to_carbon(input_text: str, user_obj):
         except Exception as e:
             logger.debug("AI service unavailable: %s", e)
 
-        # ── B. Parse + remap AI result ───────────────────────────────────────
         if analysis_results and "error" not in analysis_results:
-            ai_key  = analysis_results.get('key')
+            ai_key = analysis_results.get('key')
             ai_type = analysis_results.get('activity_type', 'Unknown')
-
-            # FIX: remap AI key → exact Django admin key
             key, activity_type, nat_unit = remap_ai_key(ai_key, ai_type)
 
             raw_qty = analysis_results.get('quantity')
@@ -765,89 +932,95 @@ def process_text_to_carbon(input_text: str, user_obj):
             except (ValueError, TypeError):
                 parsed_qty = 0
 
-            quantity, qty_inferred = (parsed_qty, False) if parsed_qty > 0 \
-                                     else extract_quantity(clean_text)
-
+            quantity, qty_inferred = (parsed_qty, False) if parsed_qty > 0 else extract_quantity(clean_text)
             detected = detect_unit_from_text(clean_text)
             unit = detected or normalize_unit(analysis_results.get('unit', '')) or nat_unit
             logger.debug("AI: type=%s key=%s qty=%s unit=%s", activity_type, key, quantity, unit)
 
-        # ── C. Local fallback ────────────────────────────────────────────────
         if activity_type == 'Unknown' or not key:
             logger.debug("Falling back to local classifier")
             activity_type, key, quantity, unit, qty_inferred = fallback_classify(clean_text)
             logger.debug("Fallback: type=%s key=%s qty=%s unit=%s", activity_type, key, quantity, unit)
 
-        # ── D. Skip if unrecognized ──────────────────────────────────────────
         if activity_type == 'Unknown' or not key:
             logger.info("Unrecognized, skipping: '%s'", clean_text)
             failed_sentences.append(f"{clean_text} (Not Recognized)")
             continue
 
-        # ── E. Quantity safety net ───────────────────────────────────────────
+        clarification_key = clarifications.get(clean_text) or clarifications.get(str(index))
+        key, ambiguity = resolve_ambiguous_factor(
+            clean_text,
+            activity_type,
+            key,
+            clarification_key=clarification_key,
+        )
+        if ambiguity:
+            ambiguity["index"] = index
+            return Response({
+                "status": "needs_clarification",
+                "transcript": input_text,
+                "message": "Multiple emission factors matched. Please choose the correct option and submit again.",
+                "clarifications": [ambiguity],
+                "failed_sentences": failed_sentences,
+                "warnings": global_warnings,
+            }, status=status.HTTP_409_CONFLICT)
+
         if not quantity or quantity <= 0:
             quantity, qty_inferred = extract_quantity(clean_text)
         if not quantity or quantity <= 0:
             quantity, qty_inferred = 1.0, True
 
-        # ── F. Unit conversion pipeline ──────────────────────────────────────
-        quantity, unit = apply_piece_to_kg(key, quantity, unit)     # piece → kg
-        quantity, unit = normalize_to_base_unit(quantity, unit)      # g→kg, mile→km
+        quantity, unit = apply_piece_to_kg(key, quantity, unit)
+        quantity, unit = normalize_to_base_unit(quantity, unit)
 
-        # ── G. Warnings for inferred quantities ─────────────────────────────
         activity_warnings = []
         if qty_inferred:
-            msg = f"Quantity assumed as 1 for '{clean_text}' — please specify for accuracy"
+            msg = f"Quantity assumed as 1 for '{clean_text}' ? please specify for accuracy"
             activity_warnings.append(msg)
             global_warnings.append(msg)
             logger.warning(msg)
 
-        # ── H. Calculate CO₂e ────────────────────────────────────────────────
         co2e, is_verified = calculate_co2e(key, quantity, unit, request_user=user_obj)
-
-        # ── I. Unique timestamp per activity ─────────────────────────────────
-        # FIX: milliseconds + index guarantees uniqueness within a batch
-        activity_ts = int(time.time() * 1000) + len(logged_activities)
-
-        cloudant_doc = {
-            "username":        username,
-            "input_text":      clean_text,
-            "activity_type":   activity_type,
-            "key":             key,
-            "quantity":        quantity,
-            "unit":            unit,
-            "co2e":            co2e,
-            "is_verified":     is_verified,
-            "timestamp":       activity_ts,
-            "date_readable":   time.strftime('%Y-%m-%d %H:%M:%S',
-                                             time.localtime(activity_ts / 1000)),
+        activity_ts = int(time.time() * 1000) + len(pending_activities)
+        pending_activities.append({
+            "username": username,
+            "input_text": clean_text,
+            "activity_type": activity_type,
+            "key": key,
+            "quantity": quantity,
+            "unit": unit,
+            "co2e": co2e,
+            "is_verified": is_verified,
+            "timestamp": activity_ts,
+            "date_readable": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(activity_ts / 1000)),
             "source_group_id": batch_id,
             "confidence": {
-                "source":       "db_verified" if is_verified else ("db" if co2e > 0 else "defaults"),
+                "source": "db_verified" if is_verified else ("db" if co2e > 0 else "defaults"),
                 "qty_inferred": qty_inferred,
-                "warnings":     activity_warnings,
+                "warnings": activity_warnings,
             },
-        }
+        })
 
-        # ── J. Save — add to total ONLY on successful save ───────────────────
+    logged_activities = []
+    for cloudant_doc in pending_activities:
         try:
             save_activity_log(cloudant_doc)
-            total_co2 += co2e   # FIX: counted AFTER save, not before
-            cloudant_doc['id'] = f"temp_{activity_ts}_{len(logged_activities)}"
+            total_co2 += cloudant_doc["co2e"]
+            cloudant_doc['id'] = f"temp_{cloudant_doc['timestamp']}_{len(logged_activities)}"
             logged_activities.append(cloudant_doc)
-            logger.info("Saved: %s → %.4f kg CO₂e (verified=%s)", key, co2e, is_verified)
+            logger.info("Saved: %s -> %.4f kg CO2e (verified=%s)", cloudant_doc["key"], cloudant_doc["co2e"], cloudant_doc["is_verified"])
         except Exception as e:
-            logger.error("Cloudant save failed for '%s': %s", key, e)
-            failed_sentences.append(f"{clean_text} (Save Failed)")
+            logger.error("Cloudant save failed for '%s': %s", cloudant_doc["key"], e)
+            failed_sentences.append(f"{cloudant_doc['input_text']} (Save Failed)")
 
     return Response({
-        "status":           "success",
-        "transcript":       input_text,
-        "logs_count":       len(logged_activities),
-        "total_co2e_kg":    round(total_co2, 4),
-        "activities":       logged_activities,
+        "status": "success",
+        "transcript": input_text,
+        "logs_count": len(logged_activities),
+        "total_co2e_kg": round(total_co2, 4),
+        "activities": logged_activities,
         "failed_sentences": failed_sentences,
-        "warnings":         global_warnings,
+        "warnings": global_warnings,
         "message": (
             f"Processed {len(logged_activities)} "
             f"activit{'y' if len(logged_activities) == 1 else 'ies'}"
@@ -861,16 +1034,19 @@ def process_text_to_carbon(input_text: str, user_obj):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedOrOptions])
 def log_activity_api(request):
     input_text = request.data.get('input_text', '').strip()
     if not input_text:
         return Response({"message": "Missing input_text"}, status=status.HTTP_400_BAD_REQUEST)
-    return process_text_to_carbon(input_text, request.user)
+    clarifications = request.data.get('clarifications') or {}
+    if not isinstance(clarifications, dict):
+        clarifications = {}
+    return process_text_to_carbon(input_text, request.user, clarifications=clarifications)
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])   # FIXED: was AllowAny
+@permission_classes([IsAuthenticatedOrOptions])   # FIXED: was AllowAny
 def log_activity_audio_api(request):
     audio_file = request.FILES.get('audio')
     if not audio_file:
@@ -893,7 +1069,7 @@ def log_activity_audio_api(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedOrOptions])
 def get_user_activities_api(request):
     username = request.user.username
     try:
@@ -949,7 +1125,7 @@ def speech_to_text_api(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedOrOptions])
 def add_custom_factor(request):
     serializer = EmissionFactorSerializer(data=request.data)
     if serializer.is_valid():
