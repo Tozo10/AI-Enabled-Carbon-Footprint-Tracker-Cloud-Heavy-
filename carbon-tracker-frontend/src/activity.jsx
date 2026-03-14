@@ -3,6 +3,8 @@ import { Link, useNavigate } from "react-router-dom";
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faMicrophone, faCompactDisc, faPlusCircle } from '@fortawesome/free-solid-svg-icons';
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
 function Activity() {
   const [activityText, setActivityText] = useState("");
   const [result, setResult] = useState(null);
@@ -11,6 +13,8 @@ function Activity() {
   const [isRecording, setIsRecording] = useState(false);
   const [audioUrl, setAudioUrl] = useState(null);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [pendingClarifications, setPendingClarifications] = useState([]);
+  const [selectedClarifications, setSelectedClarifications] = useState({});
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const navigate = useNavigate();
@@ -40,7 +44,7 @@ function Activity() {
   /**
    * API CALL: LOG ACTIVITY
    */
-  const handleLogActivity = async () => {
+  const handleLogActivity = async (clarificationOverride = null) => {
     if (!activityText) return;
 
     const token = localStorage.getItem("access_token");
@@ -58,7 +62,7 @@ function Activity() {
     setResult(null);
 
     try {
-      const response = await fetch("http://localhost:8000/api/log-activity/", {
+      const response = await fetch(`${API_BASE_URL}/api/log-activity/`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -67,26 +71,48 @@ function Activity() {
         body: JSON.stringify({
           username: username, // Cloudant depends on this
           input_text: activityText,
+          clarifications: clarificationOverride || selectedClarifications,
         }),
       });
 
-      const data = await response.json();
+      const raw = await response.text();
+      let data = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        data = { message: raw || "Non-JSON response from server." };
+      }
 
       if (response.ok) {
         setResult(data);
+        setPendingClarifications([]);
+        setSelectedClarifications({});
         setActivityText("");
+      } else if (response.status === 409 && data.status === "needs_clarification") {
+        const defaults = {};
+        (data.clarifications || []).forEach((item) => {
+          const recommended = item.options?.find((option) => option.is_most_used) || item.options?.[0];
+          if (recommended) {
+            defaults[String(item.index)] = recommended.key;
+          }
+        });
+        setPendingClarifications(data.clarifications || []);
+        setSelectedClarifications((prev) => ({
+          ...prev,
+          ...defaults,
+        }));
       } else {
         // If the token is expired, redirect to login
         if (response.status === 401 || response.status === 403) {
             alert("Session expired. Please log in again.");
             navigate("/");
         } else {
-            alert("Error: " + (data.message || "Unknown error"));
+            alert(`Error ${response.status}: ` + (data.message || "Unknown error"));
         }
       }
     } catch (error) {
       console.error("Error logging activity:", error);
-      alert("Could not connect to server.");
+      alert(`Request failed: ${error.message}`);
     } finally {
       setLoading(false);
     }
@@ -100,7 +126,7 @@ function Activity() {
     const token = localStorage.getItem("access_token");
 
     try {
-      const response = await fetch("http://localhost:8000/api/add-custom-factor/", {
+      const response = await fetch(`${API_BASE_URL}/api/add-custom-factor/`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -162,7 +188,7 @@ function Activity() {
     try {
       const formData = new FormData();
       formData.append('audio', blob, 'recording.webm');
-      const response = await fetch('http://localhost:8000/api/speech-to-text/', {
+      const response = await fetch(`${API_BASE_URL}/api/speech-to-text/`, {
         method: 'POST',
         body: formData,
       });
@@ -182,6 +208,11 @@ function Activity() {
       e.preventDefault();
       handleLogActivity();
     }
+  };
+
+  const submitClarifications = () => {
+    if (!pendingClarifications.length) return;
+    handleLogActivity(selectedClarifications);
   };
 
   return (
@@ -228,7 +259,7 @@ function Activity() {
         </div>
 
         <button
-          onClick={handleLogActivity}
+          onClick={() => handleLogActivity()}
           disabled={loading || isTranscribing || !activityText}
           className={`mt-10 w-full font-bold py-4 px-8 rounded-xl text-lg transition-all transform active:scale-95 shadow-xl ${
             loading || isTranscribing || !activityText
@@ -238,6 +269,51 @@ function Activity() {
         >
           {loading ? "Analyzing Data..." : "Calculate Carbon Footprint"}
         </button>
+
+        {pendingClarifications.length > 0 && (
+          <div className="mt-6 rounded-xl border border-amber-500/40 bg-amber-500/10 p-5">
+            <h3 className="text-lg font-bold text-amber-300">Choose the exact factor</h3>
+            <div className="mt-4 space-y-4">
+              {pendingClarifications.map((item) => (
+                <div key={item.index} className="rounded-lg border border-gray-700 bg-gray-900/70 p-4">
+                  <p className="text-sm text-gray-300 mb-3">For: "{item.sentence}"</p>
+                  <div className="space-y-2">
+                    {item.options?.map((option) => (
+                      <label key={option.key} className="flex items-center justify-between gap-4 rounded-lg border border-gray-700 px-3 py-2 cursor-pointer">
+                        <div>
+                          <input
+                            type="radio"
+                            name={`clarification-${item.index}`}
+                            className="mr-3"
+                            checked={selectedClarifications[String(item.index)] === option.key}
+                            onChange={() => setSelectedClarifications((prev) => ({
+                              ...prev,
+                              [String(item.index)]: option.key,
+                            }))}
+                          />
+                          <span className="font-semibold text-white">{option.label}</span>
+                          <span className="ml-2 text-xs text-gray-400">per {option.unit}</span>
+                        </div>
+                        {option.is_most_used && (
+                          <span className="rounded-full bg-green-500/20 px-2 py-1 text-xs font-bold text-green-300">
+                            Most used
+                          </span>
+                        )}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button
+              onClick={() => submitClarifications()}
+              disabled={loading}
+              className="mt-4 w-full rounded-xl bg-amber-500 px-4 py-3 font-bold text-gray-900 hover:bg-amber-400 disabled:opacity-60"
+            >
+              Confirm selection
+            </button>
+          </div>
+        )}
 
         {/* CROWDSOURCING LINK */}
         <div className="mt-6 text-center">
