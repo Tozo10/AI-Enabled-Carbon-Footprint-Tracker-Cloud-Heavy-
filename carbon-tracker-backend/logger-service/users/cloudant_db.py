@@ -59,7 +59,7 @@ def save_activity_log(data):
         
         if response.get('ok'):
             print("DEBUG: Successfully saved to Cloudant.")
-            return True
+            return response
         else:
             print("DEBUG: Cloudant accepted request but returned 'not ok'.")
             return False
@@ -80,17 +80,32 @@ def get_user_logs_cloudant(username):
     
     try:
         print(f"DEBUG: Fetching logs for '{username}' from Cloudant...")
-        
-        # Cloudant Query (Mango Query)
+
         selector = {"username": {"$eq": username}}
-        
-        result = client.post_find(
-            db=db_name,
-            selector=selector,
-            limit=100  # Limit to 100 most recent logs for performance
-        ).get_result()
-        
-        docs = result.get('docs', [])
+        docs = []
+        bookmark = None
+        batch_size = 200
+
+        while True:
+            payload = {
+                "selector": selector,
+                "limit": batch_size,
+            }
+            if bookmark:
+                payload["bookmark"] = bookmark
+
+            result = client.post_find(
+                db=db_name,
+                **payload
+            ).get_result()
+
+            batch_docs = result.get('docs', [])
+            docs.extend(batch_docs)
+
+            bookmark = result.get("bookmark")
+            if len(batch_docs) < batch_size or not bookmark:
+                break
+
         print(f"DEBUG: Found {len(docs)} logs in Cloudant.")
         return docs
 

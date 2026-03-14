@@ -1004,9 +1004,16 @@ def process_text_to_carbon(input_text: str, user_obj, clarifications=None):
     logged_activities = []
     for cloudant_doc in pending_activities:
         try:
-            save_activity_log(cloudant_doc)
+            save_result = save_activity_log(cloudant_doc)
+            if not save_result:
+                logger.error("Cloudant save returned failure for '%s'", cloudant_doc["key"])
+                failed_sentences.append(f"{cloudant_doc['input_text']} (Save Failed)")
+                continue
+
             total_co2 += cloudant_doc["co2e"]
-            cloudant_doc['id'] = f"temp_{cloudant_doc['timestamp']}_{len(logged_activities)}"
+            cloudant_doc['_id'] = save_result.get('id')
+            cloudant_doc['_rev'] = save_result.get('rev')
+            cloudant_doc['id'] = save_result.get('id') or f"temp_{cloudant_doc['timestamp']}_{len(logged_activities)}"
             logged_activities.append(cloudant_doc)
             logger.info("Saved: %s -> %.4f kg CO2e (verified=%s)", cloudant_doc["key"], cloudant_doc["co2e"], cloudant_doc["is_verified"])
         except Exception as e:
